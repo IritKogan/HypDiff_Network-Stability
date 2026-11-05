@@ -40,7 +40,9 @@ def hkmeanscom(args):
     # fit unsupervised clustering
     
     m=3
-    hkmeans = HyperbolicKMeans(n_clusters=m)
+    hkmeans = HyperbolicKMeans(
+        n_clusters=m, curvature=getattr(args, 'pilot_curvature', 1.0)
+    )
     hkmeans.fit(emb_data, max_epochs=5)
     labels=hkmeans.assignments
     center=hkmeans.centroids
@@ -82,7 +84,9 @@ def graph_hkmeanscom(args, emb_data, dataloader):
     # for batch_idx, data in enumerate(dataloader):
     for batch_idx in range(len(emb_data)):
         m=3
-        hkmeans = HyperbolicKMeans(n_clusters=m)
+        hkmeans = HyperbolicKMeans(
+            n_clusters=m, curvature=getattr(args, 'pilot_curvature', 1.0)
+        )
         hkmeans.fit(emb_data[batch_idx], max_epochs=5)
         labels=hkmeans.assignments
         center=hkmeans.centroids
