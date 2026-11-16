@@ -44,15 +44,6 @@ htmlcov/
 .nox/
 .coverage
 .coverage.*
-artifacts/wp5_synthetic_pilot/
-artifacts/wp7_synthetic_calibration/
-artifacts/wp7_synthetic_evaluation/
-artifacts/wp7_prethreshold_diagnostic/
-artifacts/wp7_noise_depth_diagnostic/
-artifacts/encoder_damage_diagnostic/
-artifacts/proteins_pilot/
-artifacts/synthetic_pilot/
-data/tu/
 .cache
 nosetests.xml
 coverage.xml
@@ -148,3 +139,9 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# Project: local results, datasets and personal outputs (not in git)
+artifacts/
+data/tu/
+data/Cora/
+Claude outputs/

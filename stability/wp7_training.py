@@ -75,6 +75,57 @@ def _edge_split(edges: tuple[tuple[str, str], ...], graph: SyntheticGraph, seed:
     return train_edges, validation_edges, train_negatives, validation_negatives
 
 
+def _edge_split_validation_first(
+    edges: tuple[tuple[str, str], ...], graph: SyntheticGraph, seed: int
+):
+    node_index = {node: index for index, node in enumerate(graph.node_ids)}
+    indexed_edges = tuple(
+        (node_index[source], node_index[target]) for source, target in edges
+    )
+    if len(indexed_edges) < 2:
+        raise ValueError(f"{graph.graph_id}: at least two positive edges are required")
+    permutation = np.random.default_rng(seed).permutation(len(indexed_edges))
+    validation_count = max(1, len(indexed_edges) // 5)
+    validation_indices = set(permutation[:validation_count].tolist())
+    train_edges = tuple(
+        edge
+        for index, edge in enumerate(indexed_edges)
+        if index not in validation_indices
+    )
+    validation_edges = tuple(
+        edge
+        for index, edge in enumerate(indexed_edges)
+        if index in validation_indices
+    )
+
+    all_pairs = tuple(itertools.combinations(range(len(graph.node_ids)), 2))
+    positive_pairs = {frozenset(edge) for edge in indexed_edges}
+    true_nonedges = tuple(
+        pair for pair in all_pairs if frozenset(pair) not in positive_pairs
+    )
+    negative_order = np.random.default_rng(seed + 1).permutation(
+        len(true_nonedges)
+    )
+    if len(true_nonedges) < validation_count + 1:
+        raise ValueError(
+            f"{graph.graph_id}: validation-first split needs at least "
+            f"{validation_count + 1} true nonedges, found {len(true_nonedges)}"
+        )
+
+    validation_negatives = tuple(
+        true_nonedges[index] for index in negative_order[:validation_count]
+    )
+    remaining_negative_indices = negative_order[validation_count:]
+    train_negative_count = min(len(train_edges), len(remaining_negative_indices))
+    train_negatives = tuple(
+        true_nonedges[index]
+        for index in remaining_negative_indices[:train_negative_count]
+    )
+    if not train_edges or not validation_edges or not train_negatives or not validation_negatives:
+        raise ValueError(f"{graph.graph_id}: validation-first split has an empty group")
+    return train_edges, validation_edges, train_negatives, validation_negatives
+
+
 def _edge_tensor(edges, device):
     return torch.tensor(edges, dtype=torch.long, device=device).reshape(-1, 2)
 
@@ -150,6 +201,7 @@ def train_graph_models(
     config: PilotConfig,
     model_seed: int,
     checkpoint_dir: Path | None = None,
+    validation_first_negative_split: bool = False,
 ):
     random.seed(model_seed)
     np.random.seed(model_seed)
@@ -157,7 +209,12 @@ def train_graph_models(
     args = model_args(graph, config)
     encoder = LPModel(args).cpu()
     denoiser = diffusion(args, dim=args.dim, curvature=config.curvature).cpu()
-    train_edges, validation_edges, train_negatives, validation_negatives = _edge_split(
+    edge_splitter = (
+        _edge_split_validation_first
+        if validation_first_negative_split
+        else _edge_split
+    )
+    train_edges, validation_edges, train_negatives, validation_negatives = edge_splitter(
         graph.edges, graph, model_seed + 1
     )
     train_adjacency = make_adjacency(len(graph.node_ids), train_edges)
@@ -257,9 +314,22 @@ def train_graph_models(
         "denoiser_checkpoint_sha256": _state_hash(denoiser),
         "encoder_frozen": all(not p.requires_grad for p in encoder.parameters()),
         "denoiser_frozen": all(not p.requires_grad for p in denoiser.parameters()),
+        "train_edges": [
+            [graph.node_ids[source], graph.node_ids[target]]
+            for source, target in train_edges
+        ],
         "validation_edges": [
             [graph.node_ids[source], graph.node_ids[target]]
             for source, target in validation_edges
+        ],
+        "validation_first_negative_split": validation_first_negative_split,
+        "train_negative_edges": [
+            [graph.node_ids[source], graph.node_ids[target]]
+            for source, target in train_negatives
+        ],
+        "validation_negative_edges": [
+            [graph.node_ids[source], graph.node_ids[target]]
+            for source, target in validation_negatives
         ],
     }
     return (

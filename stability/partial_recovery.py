@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Hashable, Iterable, Sequence
+from itertools import islice
+from typing import Callable, Hashable, Iterable, Sequence
 
 import numpy as np
 import torch
@@ -79,40 +80,65 @@ def decode_edge_set(
     encoder,
     embeddings: torch.Tensor,
     node_ids: Sequence[object],
-    candidate_edges: Sequence[Edge],
+    candidate_edges: Iterable[Edge],
     tau: float,
+    candidate_chunk_size: int | None = None,
+    retain_probabilities: bool = True,
+    validate_candidates: bool = True,
 ) -> tuple[tuple[Edge, ...], torch.Tensor]:
     if not 0.0 <= tau <= 1.0:
         raise ValueError("tau must be in [0, 1]")
+    if candidate_chunk_size is not None and candidate_chunk_size <= 0:
+        raise ValueError("candidate_chunk_size must be positive")
     node_order = {node: index for index, node in enumerate(node_ids)}
     if len(node_order) != len(node_ids):
         raise ValueError("node_ids must be unique")
-    pairs = []
-    canonical_edges = []
     seen = set()
-    for source, target in candidate_edges:
-        if source not in node_order or target not in node_order:
-            raise ValueError(f"candidate edge endpoint missing from node_ids: {(source, target)!r}")
-        if source == target:
-            raise ValueError("candidate edges must not contain self-loops")
-        key = frozenset((source, target))
-        if key in seen:
-            raise ValueError(f"candidate edges contain duplicate undirected edge: {(source, target)!r}")
-        seen.add(key)
-        pairs.append((node_order[source], node_order[target]))
-        canonical_edges.append((source, target))
+    chunk_size = candidate_chunk_size or 2**63 - 1
+    predicted_edges = []
+    probability_chunks = []
+    iterator = iter(candidate_edges)
+    while chunk := tuple(islice(iterator, chunk_size)):
+        pairs = []
+        for source, target in chunk:
+            if source not in node_order or target not in node_order:
+                raise ValueError(
+                    f"candidate edge endpoint missing from node_ids: {(source, target)!r}"
+                )
+            if source == target:
+                raise ValueError("candidate edges must not contain self-loops")
+            if validate_candidates:
+                key = frozenset((source, target))
+                if key in seen:
+                    raise ValueError(
+                        f"candidate edges contain duplicate undirected edge: "
+                        f"{(source, target)!r}"
+                    )
+                seen.add(key)
+            pairs.append((node_order[source], node_order[target]))
 
-    edge_index = torch.tensor(
-        pairs, dtype=torch.long, device=embeddings.device
-    ).reshape(-1, 2)
-    probabilities = encoder.decode(embeddings, edge_index)
-    if not torch.isfinite(probabilities).all():
-        raise ValueError("decoder produced non-finite probabilities")
-    present = probabilities >= tau
-    edge_set = tuple(
-        edge for edge, is_present in zip(canonical_edges, present.tolist()) if is_present
-    )
-    return edge_set, probabilities.detach()
+        edge_index = torch.tensor(
+            pairs, dtype=torch.long, device=embeddings.device
+        ).reshape(-1, 2)
+        probabilities = encoder.decode(embeddings, edge_index)
+        if not torch.isfinite(probabilities).all():
+            raise ValueError("decoder produced non-finite probabilities")
+        predicted_edges.extend(
+            edge
+            for edge, is_present in zip(chunk, (probabilities >= tau).tolist())
+            if is_present
+        )
+        if retain_probabilities:
+            probability_chunks.append(probabilities.detach())
+    if retain_probabilities:
+        probabilities = (
+            torch.cat(probability_chunks)
+            if probability_chunks
+            else torch.empty(0, dtype=embeddings.dtype, device=embeddings.device)
+        )
+    else:
+        probabilities = torch.empty(0, dtype=embeddings.dtype, device=embeddings.device)
+    return tuple(predicted_edges), probabilities
 
 
 def decode_without_diffusion(
@@ -135,11 +161,14 @@ def reconstruct_k(
     damaged_adjacency: torch.Tensor,
     context: CommunityContext,
     node_ids: Sequence[object],
-    candidate_edges: Sequence[Edge],
+    candidate_edges: Iterable[Edge] | Callable[[], Iterable[Edge]],
     t_star: int,
     num_reconstructions: int,
     seed: int,
     config: PilotConfig,
+    candidate_chunk_size: int | None = None,
+    retain_probabilities: bool = True,
+    validate_candidates: bool = True,
 ) -> ReconstructionBatch:
     if num_reconstructions <= 0:
         raise ValueError("num_reconstructions must be positive")
@@ -153,6 +182,14 @@ def reconstruct_k(
         raise ValueError("community context must have one label per node")
     if tuple(node_ids) != context.node_ids:
         raise ValueError("reconstruction node_ids must match the frozen context order")
+
+    if callable(candidate_edges):
+        candidate_factory = candidate_edges
+    else:
+        first_iterator = iter(candidate_edges)
+        if first_iterator is candidate_edges:
+            candidate_edges = tuple(first_iterator)
+        candidate_factory = lambda: iter(candidate_edges)
 
     edge_sets = []
     probabilities = []
@@ -175,8 +212,11 @@ def reconstruct_k(
             encoder,
             recovered,
             node_ids,
-            candidate_edges,
+            candidate_factory(),
             config.tau,
+            candidate_chunk_size=candidate_chunk_size,
+            retain_probabilities=retain_probabilities,
+            validate_candidates=validate_candidates,
         )
         edge_sets.append(edge_set)
         probabilities.append(edge_probabilities)

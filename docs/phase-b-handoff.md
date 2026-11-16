@@ -3,11 +3,10 @@
 ## Status
 
 Phase B has a reproducible CPU development path for graph perturbation, latent
-diffusion recovery, and probabilistic removed-edge scoring. The completed
-PROTEINS and synthetic pilots are descriptive, small-sample experiments; they
-do not establish broad generalization or superiority. Distribution-level
-recovery metrics and the IMDB-BINARY end-to-end/efficiency benchmark remain
-open.
+diffusion recovery, and probabilistic removed-edge scoring. Completed
+PROTEINS, synthetic, and IMDB-BINARY experiments are descriptive evaluations;
+they do not establish broad generalization or superiority. The IMDB-BINARY
+distribution analysis is complete. The GPU efficiency benchmark remains open.
 
 The current CPU environment is Windows, Python 3.11.9, PyTorch 2.12.0+cpu,
 PyTorch Geometric 2.8.0.post1, NumPy 2.4.4, SciPy 1.17.1, NetworkX 3.6.1,
@@ -50,7 +49,7 @@ python -m pytest -q
 git diff --check
 ```
 
-Result: **51 passed**, with four existing PyTorch deprecation/sparse-tensor
+Result: **60 passed**, with four existing PyTorch deprecation/sparse-tensor
 warnings; `git diff --check` passed.
 
 The SBM/BA JSON aggregation regression test exercises one JSON-list
@@ -171,21 +170,57 @@ An output directory must be new and unused. Do not overwrite any prior attempt.
 For detailed progress, calibration thresholds, model checkpoints, and per-case
 metrics, see the local artifacts listed below.
 
+### Completed IMDB-BINARY expanded known-graph evaluation
+
+The expanded follow-up used 20 newly selected independent sources as the
+primary evaluation set; models were trained on each intact graph before
+perturbation, so this is known-graph recovery. On the same perturbations and
+frozen thresholds, partial recovery had higher exact removed-edge recovery
+than no-diffusion decoding (24.43% versus 5.55%), alongside higher mean false
+positives (10.70 versus 3.88 per graph/attack/damage group) and higher
+realized evaluation FPR (6.84% versus 2.20%).
+
+The 5% value was the calibration-set mean-FPR cap used to select and freeze
+the thresholds; it was not an evaluation guarantee. Partial recovery's
+6.84% evaluation FPR is the observed result and was not recalibrated. The
+corrected standard density-coverage F1dc at k=2 was 0.502 for partial
+recovery and 0.309 for no diffusion; corresponding F1pr was 0.596 and 0.380.
+The pooled 25-source summary is supplementary only. Sensitivity, uncertainty,
+ties, duplicate-output diagnostics, and the correction details are in
+`docs/imdb-binary-expanded-evaluation-2026-11-10.md`. The previous five-source
+report and artifacts were preserved.
+
 ## Still open
 
-- Distribution-level recovery evaluation: degree, clustering, and spectral
-  MMD, plus precision-recall, density-coverage, and F1, with prespecified
-  reference sets and handling of repeated outputs.
-- IMDB-BINARY end-to-end recovery, after resolving the graph-task versus
-  node-level recovery-path mismatch.
-- The book's 1,000-step IMDB-B efficiency test (under 15 seconds and below
-  3 GB VRAM); the reviewed paths use 200 steps and this CPU-only machine cannot
-  verify VRAM.
+- The book's IMDB-B efficiency target is recorded in prior review notes as
+  under 15 seconds and below 3 GB GPU memory. The interpretation of the
+  project's 1,000-step requirement remains pending supervisor clarification.
+  Appendix K, Table C.5 reports 1,000-step denoising for graph generation
+  and training GPU memory separately; it does not establish that the current
+  fixed-node recovery pipeline must use 1,000 reverse steps.
+- Proposed separate benchmark for the current fixed-node recovery pipeline:
+  retain its 200-step schedule and `t_star=7`, which executes eight reverse
+  denoiser calls per reconstruction (timesteps 7 through 0, inclusive).
+  Measure five preselected fixed-node graphs with eight serial
+  reconstructions per damaged input (40 reconstructions total), after
+  warm-up. Time damaged-graph encoding, the reverse denoising calls, and
+  candidate-pair decoding; exclude training, data/checkpoint loading, and
+  precomputed intact-graph community context. Synchronize CUDA for wall-clock
+  timing and report per-reconstruction median, p95, and range, as well as
+  end-to-end time for each eight-reconstruction set. Reset peak-memory
+  statistics after warm-up and report peak allocated and reserved GPU memory
+  over inference, including resident models, graph inputs/context, activations,
+  diffusion intermediates, and decoder candidates. Record GPU, driver,
+  CUDA/PyTorch versions, precision, and checkpoint/config hashes.
+- This is a proposal only. No benchmark-specific code changes, schedule
+  changes, training, or benchmark runs are authorized. Wait for explicit
+  approval and a confirmed compatible GPU environment before proceeding.
+  The current CPU-only environment cannot verify GPU runtime or memory.
 - Broader graph-level uncertainty/generalization beyond the small fixed graph
   samples, and comparison against a trained Euclidean generative baseline.
 
-No distribution-level metric run, IMDB-B download, benchmark, recalibration,
-or additional training is included in this handoff.
+No GPU efficiency benchmark or threshold recalibration is included in this
+handoff.
 
 ## Local-only outputs and data
 
