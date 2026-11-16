@@ -64,7 +64,7 @@ def _variant(job):
     from stability.hypdiff_models import StabilityLPModel
     from stability.partial_recovery import CommunityContext
 
-    raw, name, overrides, encoder_state, context_tensors, t_stars = job
+    raw, name, overrides, encoder_state, context_tensors, t_stars, samplers = job
     raw = json.loads(json.dumps(raw))
     for key, value in overrides.items():
         section, field = key.split(".") if "." in key else ("denoiser", key)
@@ -85,12 +85,14 @@ def _variant(job):
     seconds = time.time() - started
     models = TrainedModels(encoder, denoiser, context, train_adjacency, history)
     rows = []
-    for t_star in t_stars:
+    for t_star, sampler in itertools.product(t_stars, samplers or [config.recovery.sampler]):
         raw_t = json.loads(json.dumps(raw))
         raw_t["recovery"]["t_star"] = t_star
+        raw_t["recovery"]["sampler"] = sampler
+        denoiser.sampler = sampler   # evaluation-time option: no retraining needed
         result = validation_recovery(graph, split, models, config_from_dict(raw_t), device)
         rows.append({
-            "variant": name, **overrides, "t_star": t_star,
+            "variant": name, **overrides, "t_star": t_star, "sampler": sampler,
             "val_auc_diffusion": result["diffusion"]["auc_mean_probability"],
             "val_auc_no_diffusion": result["no_diffusion"]["auc_mean_probability"],
             "val_auc_clamp_only": result["clamp_only"]["auc_mean_probability"],
@@ -127,6 +129,8 @@ def main() -> None:
     parser.add_argument("--variants", nargs="*", default=[], choices=list(VARIANTS))
     parser.add_argument("--set", action="append", default=[], help="section.key=v1,v2,... (denoiser/community)")
     parser.add_argument("--t-stars", type=int, nargs="+", default=[0, 7, 15])
+    parser.add_argument("--samplers", nargs="*", default=[], choices=["iterative", "one_step"],
+                        help="evaluate each trained denoiser with these samplers (default: config)")
     parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args()
 
@@ -135,7 +139,7 @@ def main() -> None:
     for item in args.set:
         key, values = item.split("=", 1)
         if key.split(".")[0] not in {"denoiser", "community"}:
-            parser.error("--set only supports [denoiser] and [community] keys (encoder is trained once)")
+            parser.error("--set only supports [denoiser] and [community] keys (use --samplers)")
         grid[key] = [_parse_value(v) for v in values.split(",")]
     points = [dict(zip(grid, combo)) for combo in itertools.product(*grid.values())] if grid else [{}]
     named = [(name, dict(VARIANTS[name])) for name in args.variants]
@@ -161,7 +165,8 @@ def main() -> None:
     for name, overrides in jobs_spec:
         k = overrides.get("community.n_clusters", config.community.n_clusters)
         jobs.append((raw, name, overrides, encoder.state_dict(),
-                     {"labels": contexts[k]["labels"], "centers": contexts[k]["centers"]}, args.t_stars))
+                     {"labels": contexts[k]["labels"], "centers": contexts[k]["centers"]}, args.t_stars,
+                     args.samplers))
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         rows = [row for result in pool.map(_variant, jobs) for row in result]
     rows.sort(key=lambda row: -row["val_auc_diffusion"])

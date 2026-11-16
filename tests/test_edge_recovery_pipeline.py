@@ -74,7 +74,7 @@ def test_cora_config_loads_with_approved_defaults():
     assert config.recovery.t_star == 7
     assert config.community.n_clusters == 7
     assert config.model.dim == 128 and config.model.dropout == 0.7
-    assert config.denoiser.epochs == 5000
+    assert config.denoiser.epochs == 5000 and config.denoiser.training == "edge_reconstruction"
     assert config.autoencoder.max_epochs == 2000
     assert json.loads(json.dumps(config.to_dict()))["perturbation"]["series"] == 20
 
@@ -316,11 +316,11 @@ def test_residual_denoiser_is_identity_at_initialisation():
     assert torch.equal(network(x, edge_index, torch.full((5,), 0.1)), x)
 
 
-def test_default_denoiser_options_reproduce_upstream_architecture(graph):
+def test_upstream_denoiser_options_reproduce_upstream_architecture(graph):
     from models.direction_diffusion import gcndec
     from stability.model_training import build_model_args
 
-    config = tiny_config()
+    config = tiny_config(denoiser={"architecture": "upstream_gcn", "clip_x0": True})
     args, _ = build_model_args(graph, config, torch.device("cpu"))
     from stability.hypdiff_models import StabilityDiffusion
 
@@ -332,7 +332,7 @@ def test_default_denoiser_options_reproduce_upstream_architecture(graph):
     assert type(denoiser.gcn).__name__ == "ResidualGCNDenoiser" and denoiser.clip_x0 is False
 
 
-@pytest.mark.parametrize("training", ["generative", "damage_aware"])
+@pytest.mark.parametrize("training", ["generative", "damage_aware", "edge_reconstruction"])
 def test_denoiser_training_does_not_read_pool_edges(graph, monkeypatch, training):
     from dataclasses import replace
 
@@ -346,7 +346,7 @@ def test_denoiser_training_does_not_read_pool_edges(graph, monkeypatch, training
     second = train_models(graph, replace(split, pool=split.pool[:0]), config, torch.device("cpu"))
     for name, tensor in first.denoiser.state_dict().items():
         assert torch.equal(tensor, second.denoiser.state_dict()[name]), name
-    if training == "damage_aware":
+    if training != "generative":
         drops = first.history["denoiser_drop_fractions"]
         assert len(drops) == config.denoiser.epochs
         assert all(0.0 <= d < config.denoiser.train_max_drop for d in drops)
@@ -404,3 +404,37 @@ def test_radial_delta_scales_the_prior_term(graph):
     assert priors[0.4] == pytest.approx(0.4 * priors[1.0])
     with pytest.raises(ValueError, match="radial_delta"):
         config_from_dict({**raw_config(), "denoiser": {**raw_config()["denoiser"], "radial_delta": -1.0}})
+
+
+def test_edge_reconstruction_training_reduces_its_loss_and_keeps_encoder_frozen(graph):
+    config = tiny_config(denoiser={"training": "edge_reconstruction", "architecture": "residual_gcn",
+                                   "epochs": 40, "train_t_max": 8, "clip_x0": False})
+    split = split_edges(graph.edges, graph.node_count, 0.5, 0.1, 0.4, 40, seed=3)
+    from stability.model_training import build_context, train_denoiser, train_encoder
+
+    encoder, args, adjacency, _, _ = train_encoder(graph, split, config, torch.device("cpu"))
+    before = {k: v.clone() for k, v in encoder.state_dict().items()}
+    context = build_context(graph, config, encoder, adjacency, torch.device("cpu"))
+    _, history = train_denoiser(graph, split, config, torch.device("cpu"), encoder, args, adjacency, context)
+    losses = history["denoiser_loss"]
+    assert np.mean(losses[-10:]) < np.mean(losses[:10])
+    for name, tensor in encoder.state_dict().items():
+        assert torch.equal(tensor, before[name]), name
+
+
+def test_one_step_sampler_calls_the_network_once(graph, monkeypatch):
+    from stability.hypdiff_models import StabilityDiffusion
+    from stability.model_training import build_model_args
+
+    for sampler, expected_calls in (("one_step", 1), ("iterative", 8)):
+        args, _ = build_model_args(graph, tiny_config(recovery={"sampler": sampler}), torch.device("cpu"))
+        denoiser = StabilityDiffusion(args, dim=args.dim, device="cpu")
+        calls = []
+        original = denoiser.gcn.forward
+        monkeypatch.setattr(denoiser.gcn, "forward", lambda *a, **k: calls.append(1) or original(*a, **k))
+        x = torch.randn(graph.node_count, args.dim, dtype=torch.float64)
+        edges = torch.as_tensor(graph.edges.T)
+        labels = torch.zeros(graph.node_count, dtype=torch.long)
+        direction = torch.ones(1, args.dim, dtype=torch.float64)
+        denoiser._denoise_from_tstar(x, edges, direction, labels, 7, torch.Generator().manual_seed(0))
+        assert len(calls) == expected_calls, sampler

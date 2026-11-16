@@ -17,7 +17,7 @@ DEVICES = ("auto", "cpu", "cuda")
 NOISE_FORMULAS = ("exact", "upstream")
 FINAL_ACTIVATIONS = ("relu", "leaky_relu")
 DENOISER_ARCHITECTURES = ("upstream_gcn", "residual_gcn")
-DENOISER_TRAINING = ("generative", "damage_aware")
+DENOISER_TRAINING = ("generative", "damage_aware", "edge_reconstruction")
 TAU_MODES = ("fixed", "val_fpr")
 DIFFUSION_STEPS = 200  # upstream HypDiff num_timesteps (hard-coded upstream)
 
@@ -107,6 +107,7 @@ class RecoveryConfig:
     tau_mode: str
     tau: float
     target_fpr: float
+    sampler: str
     reconstructions: int
 
 
@@ -273,5 +274,6 @@ def _validate(config: ExperimentConfig) -> None:
     _require(0 <= rec.t_star < DIFFUSION_STEPS, f"recovery.t_star must be in [0, {DIFFUSION_STEPS - 1}]")
     _require(0.0 <= rec.tau <= 1.0, "recovery.tau must be in [0, 1]")
     _require(rec.tau_mode in TAU_MODES, f"recovery.tau_mode in {TAU_MODES}")
+    _require(rec.sampler in ("iterative", "one_step"), "recovery.sampler must be 'iterative' or 'one_step'")
     _require(0.0 < rec.target_fpr < 1.0, "recovery.target_fpr must be in (0, 1)")
     _require(rec.reconstructions > 0, "recovery.reconstructions must be positive")

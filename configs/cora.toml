@@ -43,16 +43,21 @@ weight_decay = 0.0005
 negatives_per_positive = 1       # resampled every epoch
 
 [denoiser]
+# Chosen on validation recovery (docs/model-selection-cora.md, 2026-11-16): residual_gcn +
+# edge_reconstruction + clip + train_t_max 8 + one_step sampler. Upstream HypDiff behaviour:
+# architecture = "upstream_gcn", training = "generative", train_t_max = 200, sampler = "iterative".
 epochs = 5000
 learning_rate = 0.001
 noise_formula = "exact"          # "exact" | "upstream"  (Decision 5)
-architecture = "upstream_gcn"    # "upstream_gcn" (HypDiff gcndec) | "residual_gcn" (x0 = x_t + correction)
+architecture = "residual_gcn"    # "upstream_gcn" (HypDiff gcndec) | "residual_gcn" (x0 = x_t + correction)
 hidden_dim = 128                 # residual_gcn only
 layers = 3                       # residual_gcn only
-training = "generative"          # "generative" (upstream: denoise noised clean embeddings)
+training = "edge_reconstruction" # "generative" (upstream: denoise noised clean embeddings)
                                  # | "damage_aware" (input: edge-dropped train graph, target: intact train graph)
-train_max_drop = 0.4             # damage_aware: per-epoch drop fraction ~ U(0, train_max_drop) of TRAIN edges
-train_t_max = 200                # timesteps sampled in [0, train_t_max) during training (200 = upstream)
+                                 # | "edge_reconstruction" (BCE through the decoder: dropped + kept train
+                                 #   edges vs sampled non-edges, after one denoising step)
+train_max_drop = 0.4             # damage_aware / edge_reconstruction: per-epoch drop fraction ~ U(0, train_max_drop) of TRAIN edges
+train_t_max = 8                  # timesteps sampled in [0, train_t_max) during training (200 = upstream)
 clip_x0 = true                   # upstream clamps predicted x0 to [-1, 1]
 radial_delta = 1.0               # radial popularity coefficient (paper Eq. 6); upstream code 1, paper experiments 0.4
 
@@ -79,4 +84,5 @@ t_star = 7
 tau_mode = "val_fpr"             # "fixed" (use tau) | "val_fpr" (per method, calibrated on validation)
 tau = 0.5                        # used when tau_mode = "fixed"
 target_fpr = 0.05                # val_fpr: false-positive rate on validation negatives
+sampler = "one_step"             # "iterative" (t* .. 0 reverse loop, upstream-style) | "one_step" (x0 from x_t*)
 reconstructions = 10             # K per damaged graph

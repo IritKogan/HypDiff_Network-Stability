@@ -93,6 +93,7 @@ def build_model_args(graph: GraphData, config: ExperimentConfig, device: torch.d
         denoiser_layers=config.denoiser.layers,
         clip_x0=config.denoiser.clip_x0,
         radial_delta=config.denoiser.radial_delta,
+        recovery_sampler=config.recovery.sampler,
     )
     pilot = PilotConfig(
         curvature=model.curvature,
@@ -222,8 +223,12 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
                    log_every: int = 0):
     """Train the denoiser on the TRAIN graph only.
 
-    generative   : upstream objective (noised clean embeddings -> clean).
-    damage_aware : edge-dropped train graph (+ noise) -> intact train graph.
+    generative          : upstream objective (noised clean embeddings -> clean).
+    damage_aware        : edge-dropped train graph (+ noise) -> intact train graph (MSE).
+    edge_reconstruction : edge-dropped train graph -> one denoising step -> decoder;
+                          BCE(dropped train edges) + BCE(kept train edges) + BCE(negatives).
+                          Negatives use the encoder's sampler (never val negatives or
+                          control pairs); the encoder and decoder stay frozen.
     """
     seed = config.model.seed
     den = config.denoiser
@@ -236,6 +241,11 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     ).to(device)
     optimizer = torch.optim.Adam(denoiser.parameters(), lr=den.learning_rate)
     drop_rng = np.random.default_rng([seed, 2])
+    negative_rng = np.random.default_rng([seed, 3])
+    forbidden = split.forbidden_negative_keys()
+    encoder_requires_grad = [p.requires_grad for p in encoder.parameters()]
+    for parameter in encoder.parameters():
+        parameter.requires_grad_(False)
     losses, drops = [], []
     for epoch in range(den.epochs):
         denoiser.train()
@@ -251,10 +261,25 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
             damaged_adjacency = normalized_adjacency(graph.node_count, split.train[keep], device)
             with torch.no_grad():
                 damaged_embeddings = encoder.encode(features, damaged_adjacency)[2].detach()
-            loss = denoiser.restoration_loss(
-                train_embeddings, damaged_embeddings, damaged_adjacency,
-                context.labels, context.centers, den.train_t_max,
-            )
+            if den.training == "damage_aware":
+                loss = denoiser.restoration_loss(
+                    train_embeddings, damaged_embeddings, damaged_adjacency,
+                    context.labels, context.centers, den.train_t_max,
+                )
+            else:
+                t = torch.randint(0, den.train_t_max, (graph.node_count,), device=device).long()
+                recovered = denoiser.denoise_once(
+                    damaged_embeddings, damaged_adjacency, context.labels, context.centers, t
+                )
+                negatives = _edge_tensor(
+                    sample_non_edges(len(split.train), graph.node_count, forbidden, negative_rng), device
+                )
+                loss = _edge_reconstruction_loss(
+                    encoder, recovered,
+                    dropped=_edge_tensor(split.train[~keep], device),
+                    kept=_edge_tensor(split.train[keep], device),
+                    negatives=negatives,
+                )
             drops.append(fraction)
         if not torch.isfinite(loss):
             raise RuntimeError(f"non-finite denoiser loss at epoch {epoch}")
@@ -266,7 +291,26 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     denoiser.eval()
     for parameter in denoiser.parameters():
         parameter.requires_grad_(False)
+    for parameter, flag in zip(encoder.parameters(), encoder_requires_grad):
+        parameter.requires_grad_(flag)
     return denoiser, {"denoiser_loss": losses, "denoiser_drop_fractions": drops}
+
+
+def _edge_reconstruction_loss(encoder, embeddings, dropped, kept, negatives):
+    """Mean BCE (Fermi-Dirac logits) of three equally weighted groups."""
+    def logits(pairs):
+        distance = encoder.manifold.sqdist(embeddings[pairs[:, 0]], embeddings[pairs[:, 1]], encoder.c)
+        return -(distance - encoder.dc.r) / encoder.dc.t
+
+    import torch.nn.functional as F
+
+    terms = []
+    for pairs, target in ((dropped, 1.0), (kept, 1.0), (negatives, 0.0)):
+        if pairs.shape[0] == 0:
+            continue
+        values = logits(pairs)
+        terms.append(F.binary_cross_entropy_with_logits(values, torch.full_like(values, target)))
+    return torch.stack(terms).sum()
 
 
 def train_models(

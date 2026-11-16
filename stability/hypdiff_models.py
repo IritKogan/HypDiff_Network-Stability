@@ -20,7 +20,9 @@ here, as a subclass, so that the diff against upstream is explicit:
       project methods for partial-noise recovery from t* < T.
     * ``radial_delta`` (paper's delta, upstream hard-codes 1),
       ``denoiser_architecture`` ("upstream_gcn" | "residual_gcn"), ``clip_x0``
-      and ``restoration_loss`` (damage-aware training) — project options read
+      ``restoration_loss`` (damage-aware training), ``denoise_once``
+      (edge-reconstruction training) and ``recovery_sampler`` ("iterative" =
+      t* .. 0 reverse loop, "one_step" = x0 predicted directly from x_{t*}) — options read
       from ``args``; defaults reproduce the upstream behaviour.
 
     Upstream methods not used by the project (``p_sample``, ``p_sample_loop``,
@@ -105,6 +107,9 @@ class StabilityDiffusion(diffusion):
         self.dc = FermiDiracDecoder(r=args.r, t=args.t)
         # Project options (defaults = upstream behaviour).
         self.clip_x0 = bool(getattr(args, "clip_x0", True))
+        self.sampler = getattr(args, "recovery_sampler", "iterative")
+        if self.sampler not in ("iterative", "one_step"):
+            raise ValueError("recovery_sampler must be 'iterative' or 'one_step'")
         self.architecture = getattr(args, "denoiser_architecture", "upstream_gcn")
         if self.architecture not in DENOISER_ARCHITECTURES:
             raise ValueError(f"denoiser_architecture must be one of {DENOISER_ARCHITECTURES}")
@@ -226,6 +231,13 @@ class StabilityDiffusion(diffusion):
             restrict=True,
         )
 
+        if self.sampler == "one_step":
+            # Predict x0 directly from x_{t*} (the network is an x0-predictor); matches
+            # the single-step edge-reconstruction training objective.
+            batch_t = torch.full((x_t.shape[0],), t_star, device=x_t.device, dtype=torch.long)
+            x0 = self.gcn(x_t, edge_index, batch_t.to(dtype=torch.float32) / self.num_timesteps)
+            return x0.clamp(-1.0, 1.0) if self.clip_x0 else x0
+
         for timestep in range(t_star, -1, -1):
             batch_t = torch.full(
                 (x_t.shape[0],), timestep, device=x_t.device, dtype=torch.long
@@ -261,6 +273,28 @@ class StabilityDiffusion(diffusion):
         tangent = self.manifold.logmap(node_prototypes, damaged_embeddings, c=self.c)
         clipped = self.normalization(tangent).clamp(-clip, clip)
         return self.manifold.expmap(self.renormal(clipped, tangent), node_prototypes, c=self.c)
+
+    def denoise_once(self, damaged_embeddings, damaged_adjacency, labels, prototypes, t):
+        """Differentiable single recovery step used for edge-reconstruction training.
+
+        Same geometry as sample_from_tstar (tangent space at the community prototype,
+        standardised with the damaged statistics, anisotropic noise to step t), but
+        only one network call: x0 = f(x_t, A, t/T), optionally clamped, mapped back
+        to the Poincare ball. ``t`` is a LongTensor with one step per node.
+        """
+        labels = labels.to(device=damaged_embeddings.device, dtype=torch.long)
+        prototypes = prototypes.to(device=damaged_embeddings.device, dtype=damaged_embeddings.dtype)
+        node_prototypes = prototypes[labels]
+        tangent = self.manifold.logmap(node_prototypes, damaged_embeddings, c=self.c)
+        normalized = self.normalization(tangent)
+        direction = torch.stack([self.manifold.logmap0(p, c=self.c) for p in prototypes])
+        noise = torch.randn_like(normalized)
+        x_t = self.q_sample(normalized, t, direction, noise, labels, None, restrict=True)
+        x0 = self.gcn(x_t, self.edge(damaged_adjacency.coalesce()), t / self.num_timesteps)
+        if self.clip_x0:
+            x0 = x0.clamp(-1.0, 1.0)
+        recovered_tangent = self.renormal(x0.to(tangent.dtype), tangent)
+        return self.manifold.expmap(recovered_tangent, node_prototypes, c=self.c)
 
     def restoration_loss(self, clean_embeddings, damaged_embeddings, damaged_adjacency,
                          labels, prototypes, t_max):

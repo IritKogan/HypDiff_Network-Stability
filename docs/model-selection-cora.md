@@ -167,3 +167,66 @@ Validation recovery, encoder val AUC 0.825, kmeans++, upstream denoiser with cla
 most ~0.004 with no consistent direction; diffusion stays at or below clamp_only for every (k, delta).
 **Chosen:** k = 7, delta = 1 (upstream), init kmeans++. With the collapsed upstream clustering the diffusion
 scored 0.853 at t* = 7 vs 0.842 now; clamp_only is ~0.857 in both cases.
+
+## Edge-reconstruction training and the one-step sampler
+
+Why: the generative objective only teaches the denoiser to remove Gaussian noise; an embedding of a
+damaged graph is a valid embedding, so there is nothing to "repair". `denoiser.training =
+"edge_reconstruction"` drops a random fraction (U(0, 0.4)) of TRAIN edges every epoch, encodes the damaged
+graph with the frozen encoder, applies one differentiable denoising step at t ~ U[0, train_t_max)
+(`StabilityDiffusion.denoise_once`) and minimises BCE through the frozen Fermi-Dirac decoder on dropped
+train edges + kept train edges + sampled non-edges (never validation negatives or control pairs).
+
+First sweep (iterative sampler): good at t* = 0 (hit 0.53) but worse at t* = 7, because the model is trained
+for one step while the iterative sampler applies it 8 times. `recovery.sampler = "one_step"` predicts x0
+directly from x_{t*} (legitimate for an x0-predicting network) and keeps the noise at t*.
+
+Reference (same encoder): clamp_only AUC 0.857 / hit 0.473;
+no_diffusion AUC 0.825 / hit 0.384.
+
+| denoiser | sampler | t* | val AUC | hit @5% FP |
+|---|---|---|---|---|
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=50 | iterative | 0 | 0.836 | 0.524 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=50 | iterative | 3 | 0.830 | 0.495 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=50 | iterative | 7 | 0.825 | 0.435 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=50 | iterative | 15 | 0.826 | 0.401 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=50 | one_step | 0 | 0.836 | 0.524 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=50 | one_step | 3 | 0.837 | 0.521 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=50 | one_step | 7 | 0.839 | 0.519 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=50 | one_step | 15 | 0.843 | 0.507 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=8 | iterative | 0 | 0.818 | 0.499 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=8 | iterative | 3 | 0.811 | 0.455 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=8 | iterative | 7 | 0.798 | 0.355 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=8 | iterative | 15 | 0.796 | 0.322 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=8 | one_step | 0 | 0.818 | 0.499 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=8 | one_step | 3 | 0.821 | 0.501 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=8 | one_step | 7 | 0.827 | 0.498 |
+| residual_gcn + edge_reconstruction + clip=False + train_t_max=8 | one_step | 15 | 0.839 | 0.497 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=50 | iterative | 0 | 0.853 | 0.503 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=50 | iterative | 3 | 0.841 | 0.447 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=50 | iterative | 7 | 0.833 | 0.400 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=50 | iterative | 15 | 0.821 | 0.377 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=50 | one_step | 0 | 0.853 | 0.503 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=50 | one_step | 3 | 0.853 | 0.501 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=50 | one_step | 7 | 0.853 | 0.500 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=50 | one_step | 15 | 0.854 | 0.499 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=8 | iterative | 0 | 0.853 | 0.533 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=8 | iterative | 3 | 0.834 | 0.398 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=8 | iterative | 7 | 0.815 | 0.324 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=8 | iterative | 15 | 0.808 | 0.324 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=8 | one_step | 0 | 0.853 | 0.533 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=8 | one_step | 3 | 0.854 | 0.524 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=8 | one_step | 7 | 0.856 | 0.517 |
+| residual_gcn + edge_reconstruction + clip=True + train_t_max=8 | one_step | 15 | 0.860 | 0.503 |
+| upstream_gcn + generative + clip | iterative | 0 | 0.851 | 0.445 |
+| upstream_gcn + generative + clip | iterative | 3 | 0.847 | 0.431 |
+| upstream_gcn + generative + clip | iterative | 7 | 0.841 | 0.410 |
+| upstream_gcn + generative + clip | iterative | 15 | 0.837 | 0.397 |
+| upstream_gcn + generative + clip | one_step | 0 | 0.851 | 0.445 |
+| upstream_gcn + generative + clip | one_step | 3 | 0.851 | 0.444 |
+| upstream_gcn + generative + clip | one_step | 7 | 0.851 | 0.443 |
+| upstream_gcn + generative + clip | one_step | 15 | 0.851 | 0.441 |
+
+**Chosen** (t* = 7 fixed by design; hit rate at 5% FP is the operating point behind p_e, AUC as check):
+residual_gcn + edge_reconstruction + clip + train_t_max 8 + one_step sampler: val AUC 0.856,
+hit 0.517 vs clamp_only 0.473, no_diffusion 0.384, upstream denoiser 0.410 (iterative) / 0.443 (one_step).
