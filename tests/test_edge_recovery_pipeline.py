@@ -388,3 +388,19 @@ def test_calibrate_tau_respects_target_with_ties():
     spread = np.linspace(0, 1, 1001)
     tau = calibrate_tau(spread, 0.05)
     assert np.mean(spread >= tau) == pytest.approx(0.05, abs=0.002)
+
+
+def test_radial_delta_scales_the_prior_term(graph):
+    from stability.hypdiff_models import StabilityDiffusion
+    from stability.model_training import build_model_args
+
+    t = torch.full((3,), 50, dtype=torch.long)
+    priors = {}
+    for delta in (0.0, 0.4, 1.0):
+        args, _ = build_model_args(graph, tiny_config(denoiser={"radial_delta": delta}), torch.device("cpu"))
+        priors[delta] = StabilityDiffusion(args, dim=args.dim, device="cpu").getpri(t)[0, 0].item()
+    assert priors[0.0] == 0.0
+    assert priors[1.0] == pytest.approx(np.tanh(50 / 500))
+    assert priors[0.4] == pytest.approx(0.4 * priors[1.0])
+    with pytest.raises(ValueError, match="radial_delta"):
+        config_from_dict({**raw_config(), "denoiser": {**raw_config()["denoiser"], "radial_delta": -1.0}})

@@ -81,12 +81,14 @@ class DenoiserConfig:
     train_max_drop: float
     train_t_max: int
     clip_x0: bool
+    radial_delta: float
 
 
 @dataclass(frozen=True)
 class CommunityConfig:
     n_clusters: int
     max_epochs: int
+    init: str
     seed: int
 
 
@@ -238,11 +240,13 @@ def _validate(config: ExperimentConfig) -> None:
     _require(den.architecture in DENOISER_ARCHITECTURES, f"denoiser.architecture in {DENOISER_ARCHITECTURES}")
     _require(den.training in DENOISER_TRAINING, f"denoiser.training in {DENOISER_TRAINING}")
     _require(den.hidden_dim > 0 and den.layers > 0, "denoiser.hidden_dim and layers must be positive")
+    _require(den.radial_delta >= 0.0, "denoiser.radial_delta must be non-negative")
     _require(0.0 <= den.train_max_drop < 1.0, "denoiser.train_max_drop must be in [0, 1)")
     _require(0 < den.train_t_max <= DIFFUSION_STEPS, f"denoiser.train_t_max must be in (0, {DIFFUSION_STEPS}]")
 
     com = config.community
     _require(com.n_clusters >= 2 and com.max_epochs > 0, "community.n_clusters >= 2, max_epochs > 0")
+    _require(com.init in ("kmeans++", "upstream"), "community.init must be 'kmeans++' or 'upstream'")
 
     pert = config.perturbation
     _require(len(pert.damage_fractions) > 0, "perturbation.damage_fractions must not be empty")

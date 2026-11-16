@@ -18,7 +18,8 @@ here, as a subclass, so that the diff against upstream is explicit:
       (same result; upstream loops over nodes in Python).
     * ``draw_noise`` / ``_denoise_from_tstar`` / ``sample_from_tstar``  new
       project methods for partial-noise recovery from t* < T.
-    * ``denoiser_architecture`` ("upstream_gcn" | "residual_gcn"), ``clip_x0``
+    * ``radial_delta`` (paper's delta, upstream hard-codes 1),
+      ``denoiser_architecture`` ("upstream_gcn" | "residual_gcn"), ``clip_x0``
       and ``restoration_loss`` (damage-aware training) — project options read
       from ``args``; defaults reproduce the upstream behaviour.
 
@@ -61,7 +62,12 @@ class StabilityDiffusion(diffusion):
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
         device = torch.device(device)
         self.device = device
-        self.prior = 1
+        # Radial popularity coefficient delta of the paper's Eq. (6); upstream hard-codes 1
+        # (paper experiments: 0.4). getpri() = delta * tanh(sqrt(c) * t / 500), and
+        # t / 500 equals the paper's lambda_o * t / T0 with lambda_o = 2, T0 = 1000.
+        self.prior = float(getattr(args, "radial_delta", 1.0))
+        if self.prior < 0:
+            raise ValueError("radial_delta must be non-negative")
         self.c = float(curvature)
         if self.c <= 0:
             raise ValueError("curvature must be positive")

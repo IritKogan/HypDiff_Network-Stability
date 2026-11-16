@@ -92,6 +92,7 @@ def build_model_args(graph: GraphData, config: ExperimentConfig, device: torch.d
         denoiser_hidden_dim=config.denoiser.hidden_dim,
         denoiser_layers=config.denoiser.layers,
         clip_x0=config.denoiser.clip_x0,
+        radial_delta=config.denoiser.radial_delta,
     )
     pilot = PilotConfig(
         curvature=model.curvature,
@@ -203,7 +204,9 @@ def build_context(graph, config, encoder, train_adjacency, device) -> CommunityC
     """Hyperbolic K-means on train-graph embeddings (train edges only)."""
     np.random.seed(config.community.seed)
     clusterer = HyperbolicKMeans(
-        n_clusters=config.community.n_clusters, curvature=config.model.curvature
+        n_clusters=config.community.n_clusters,
+        curvature=config.model.curvature,
+        init=config.community.init,
     )
     return compute_community_context(
         encoder,

@@ -90,3 +90,14 @@ def test_kmeans_centroids_do_not_drift_to_the_boundary():
     centroids, labels = HyperbolicKMeans(n_clusters=3).fit(points, max_epochs=10)
     assert np.all(np.linalg.norm(centroids, axis=1) < 0.95)
     assert len(np.unique(labels)) == 3
+
+
+def test_kmeanspp_init_uses_all_clusters_where_upstream_init_collapses():
+    rng = np.random.default_rng(3)
+    centres = np.array([[0.5, 0.0], [-0.5, 0.0], [0.0, 0.5], [0.0, -0.5], [0.35, 0.35], [-0.35, -0.35]])
+    points = np.concatenate([c + 0.03 * rng.standard_normal((40, 2)) for c in centres])
+    np.random.seed(0)
+    _, labels = HyperbolicKMeans(n_clusters=6, init="kmeans++").fit(points, max_epochs=10)
+    assert len(np.unique(labels)) == 6
+    with pytest.raises(ValueError, match="init"):
+        HyperbolicKMeans(n_clusters=2, init="random")

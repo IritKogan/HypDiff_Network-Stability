@@ -54,10 +54,12 @@ training = "generative"          # "generative" (upstream: denoise noised clean 
 train_max_drop = 0.4             # damage_aware: per-epoch drop fraction ~ U(0, train_max_drop) of TRAIN edges
 train_t_max = 200                # timesteps sampled in [0, train_t_max) during training (200 = upstream)
 clip_x0 = true                   # upstream clamps predicted x0 to [-1, 1]
+radial_delta = 1.0               # radial popularity coefficient (paper Eq. 6); upstream code 1, paper experiments 0.4
 
 [community]
 n_clusters = 7                   # hyperbolic K-means on train-graph embeddings
 max_epochs = 40
+init = "kmeans++"                # "kmeans++" | "upstream" (upstream init collapses clusters)
 seed = 20261118
 
 [perturbation]

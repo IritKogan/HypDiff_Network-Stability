@@ -10,6 +10,12 @@
 #  * HyperbolicKMeans: curvature parameter (only 1.0 supported), passed to poincare_dist.
 #  * exp_map: Minkowski norm instead of Euclidean norm + re-projection onto the
 #    hyperboloid (2026-11-16). Upstream version pushes centroids to the boundary.
+#  * init="kmeans++" option (2026-11-16): upstream init draws centroids uniformly in
+#    [0, 0.3]^d and assigns points at random, so the first update puts every centroid
+#    near the global mean and clusters collapse (Cora: k=7 and k=20 both ended with
+#    4 non-empty clusters). kmeans++ seeds centroids from the data (Poincare distance)
+#    and re-seeds empty clusters with the point farthest from its centroid.
+#    init="upstream" keeps the original behaviour.
 # import libraries
 import numpy as np
 import matplotlib.pyplot as plt
@@ -114,7 +120,10 @@ class HyperbolicKMeans():
     API design is modeled on the standard scikit-learn Classifier API
     """
     
-    def __init__(self,n_clusters=6,max_iter=300,tol=1e-8,verbose=False,curvature=1.0):
+    def __init__(self,n_clusters=6,max_iter=300,tol=1e-8,verbose=False,curvature=1.0,init="upstream"):
+        if init not in ("upstream", "kmeans++"):
+            raise ValueError("init must be 'upstream' or 'kmeans++'")
+        self.init = init
         if not np.isclose(curvature, 1.0):
             raise ValueError(
                 "HyperbolicKMeans conversion utilities currently require curvature=1.0"
@@ -224,18 +233,22 @@ class HyperbolicKMeans():
         
         # initialize random centroids and assignments
         self.n_samples = X.shape[0]
-        self.init_centroids(dim = X.shape[1])
-        # print('yes')
-        # print(self.centroids)
-        if y is not None:
-            self.init_assign(y)
-            self.update_centroids(X)
+        if self.init == "kmeans++":
+            self.centroids = self._kmeanspp_centroids(X)
+            self.assignments = self._nearest_assignments(X)
         else:
-            self.init_assign()
+            self.init_centroids(dim = X.shape[1])
+            if y is not None:
+                self.init_assign(y)
+                self.update_centroids(X)
+            else:
+                self.init_assign()
         
         # loop through the assignment and update steps
         for j in range(max_epochs):
             self.inertia_ = 0
+            if self.init == "kmeans++":
+                self._reseed_empty_clusters(X)
             self.update_centroids(X)
             for i in range(self.n_samples):
                 # zero out current cluster assignment
@@ -258,6 +271,40 @@ class HyperbolicKMeans():
         # print(self.labels.shape)
         return self.centroids, self.labels
     
+    def _distances_to(self, X, centroid):
+        return np.array([poincare_dist(x, centroid, c=self.curvature) for x in X])
+
+    def _kmeanspp_centroids(self, X):
+        # k-means++ seeding with the Poincare distance (uses the global np.random state).
+        if self.n_clusters > len(X):
+            raise ValueError("more clusters than points")
+        centroids = [X[np.random.randint(len(X))]]
+        closest = self._distances_to(X, centroids[0]) ** 2
+        for _ in range(1, self.n_clusters):
+            total = closest.sum()
+            index = np.random.randint(len(X)) if total <= 0 else np.random.choice(len(X), p=closest / total)
+            centroids.append(X[index])
+            closest = np.minimum(closest, self._distances_to(X, X[index]) ** 2)
+        return np.array(centroids, dtype=np.float64)
+
+    def _nearest_assignments(self, X):
+        distances = np.stack([self._distances_to(X, c) for c in self.centroids], axis=1)
+        assignments = np.zeros((len(X), self.n_clusters))
+        assignments[np.arange(len(X)), np.argmin(distances, axis=1)] = 1
+        return assignments
+
+    def _reseed_empty_clusters(self, X):
+        for cluster in np.flatnonzero(self.assignments.sum(axis=0) == 0):
+            labels = np.argmax(self.assignments, axis=1)
+            own = np.array([poincare_dist(X[i], self.centroids[labels[i]], c=self.curvature)
+                            for i in range(len(X))])
+            donor_sizes = self.assignments.sum(axis=0)[labels]
+            own[donor_sizes <= 1] = -1.0          # never empty another cluster
+            farthest = int(np.argmax(own))
+            self.assignments[farthest, :] = 0
+            self.assignments[farthest, cluster] = 1
+            self.centroids[cluster] = X[farthest]
+
     def predict(self, X):
         """
         Predict class labels for given data points by nearest centroid rule

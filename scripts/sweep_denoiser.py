@@ -1,18 +1,23 @@
 """Denoiser selection on the validation-recovery protocol only.
 
-Trains the encoder and community context once (config as given), then trains
-each denoiser variant and evaluates validation recovery (train edges as input,
-validation edges vs validation negatives) at several t*. Pool edges and control
-pairs are never used. Writes a JSON table sorted by validation AUC.
+Trains the encoder once (config as given) and the community context once per
+community.n_clusters value, then trains a denoiser for every grid point (named
+--variants and/or a --set grid over [denoiser] / [community] keys) and evaluates
+validation recovery (train edges as input, validation edges vs validation
+negatives) at several t*. Pool edges and control pairs are never used.
 
-Example:
-    python scripts/sweep_denoiser.py --config configs/cora.toml --out denoiser_sweep.json
+Examples:
+    python scripts/sweep_denoiser.py --config configs/cora.toml --out sweep.json \
+        --variants upstream_generative_clip residual_damage_noclip
+    python scripts/sweep_denoiser.py --config configs/cora.toml --out sweep.json \
+        --set community.n_clusters=7,20,50 --set denoiser.radial_delta=0,0.4,1
 """
 
 from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor
+import itertools
 import json
 from pathlib import Path
 import sys
@@ -61,7 +66,9 @@ def _variant(job):
 
     raw, name, overrides, encoder_state, context_tensors, t_stars = job
     raw = json.loads(json.dumps(raw))
-    raw["denoiser"].update(overrides)
+    for key, value in overrides.items():
+        section, field = key.split(".") if "." in key else ("denoiser", key)
+        raw[section][field] = value
     config, graph, split = _setup(raw)
     device = torch.device("cpu")
     args, _ = build_model_args(graph, config, device)
@@ -86,15 +93,30 @@ def _variant(job):
             "variant": name, **overrides, "t_star": t_star,
             "val_auc_diffusion": result["diffusion"]["auc_mean_probability"],
             "val_auc_no_diffusion": result["no_diffusion"]["auc_mean_probability"],
+            "val_auc_clamp_only": result["clamp_only"]["auc_mean_probability"],
             "hit_at_target_fpr_diffusion": result["diffusion"]["hit_rate"],
             "hit_at_target_fpr_no_diffusion": result["no_diffusion"]["hit_rate"],
+            "hit_at_target_fpr_clamp_only": result["clamp_only"]["hit_rate"],
             "final_denoiser_loss": history["denoiser_loss"][-1],
             "train_seconds": round(seconds, 1),
         })
     return rows
 
 
+def _parse_value(text: str):
+    lowered = text.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    for cast in (int, float):
+        try:
+            return cast(text)
+        except ValueError:
+            pass
+    return text
+
+
 def main() -> None:
+    import numpy as np
     import torch
 
     from stability.model_training import build_context, train_encoder
@@ -102,26 +124,51 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--variants", nargs="+", default=list(VARIANTS))
-    parser.add_argument("--t-stars", type=int, nargs="+", default=[0, 3, 7, 15, 30])
+    parser.add_argument("--variants", nargs="*", default=[], choices=list(VARIANTS))
+    parser.add_argument("--set", action="append", default=[], help="section.key=v1,v2,... (denoiser/community)")
+    parser.add_argument("--t-stars", type=int, nargs="+", default=[0, 7, 15])
     parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args()
 
     raw = tomllib.loads(args.config.read_text(encoding="utf-8"))
+    grid = {}
+    for item in args.set:
+        key, values = item.split("=", 1)
+        if key.split(".")[0] not in {"denoiser", "community"}:
+            parser.error("--set only supports [denoiser] and [community] keys (encoder is trained once)")
+        grid[key] = [_parse_value(v) for v in values.split(",")]
+    points = [dict(zip(grid, combo)) for combo in itertools.product(*grid.values())] if grid else [{}]
+    named = [(name, dict(VARIANTS[name])) for name in args.variants]
+    jobs_spec = named + [(",".join(f"{k}={v}" for k, v in p.items()) or "config", p) for p in points
+                         if not named or p]
+
     config, graph, split = _setup(raw)
     device = torch.device("cpu")
     encoder, _, train_adjacency, history, _ = train_encoder(graph, split, config, device)
-    context = build_context(graph, config, encoder, train_adjacency, device)
     print(f"encoder best val AUC {history['autoencoder_best_val_auc']:.4f}", flush=True)
-    jobs = [(raw, name, VARIANTS[name], encoder.state_dict(),
-             {"labels": context.labels, "centers": context.centers}, args.t_stars)
-            for name in args.variants]
+    contexts = {}
+    for _, overrides in jobs_spec:
+        k = overrides.get("community.n_clusters", config.community.n_clusters)
+        if k not in contexts:
+            raw_k = json.loads(json.dumps(raw))
+            raw_k["community"]["n_clusters"] = k
+            from stability.experiment_config import config_from_dict
+            context = build_context(graph, config_from_dict(raw_k), encoder, train_adjacency, device)
+            sizes = np.bincount(context.labels.numpy(), minlength=k)
+            print(f"k={k}: cluster sizes min {sizes.min()} max {sizes.max()} empty {(sizes == 0).sum()}", flush=True)
+            contexts[k] = {"labels": context.labels, "centers": context.centers, "sizes": sizes.tolist()}
+    jobs = []
+    for name, overrides in jobs_spec:
+        k = overrides.get("community.n_clusters", config.community.n_clusters)
+        jobs.append((raw, name, overrides, encoder.state_dict(),
+                     {"labels": contexts[k]["labels"], "centers": contexts[k]["centers"]}, args.t_stars))
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         rows = [row for result in pool.map(_variant, jobs) for row in result]
     rows.sort(key=lambda row: -row["val_auc_diffusion"])
     args.out.write_text(json.dumps({
         "config": str(args.config),
         "encoder_best_val_auc": history["autoencoder_best_val_auc"],
+        "cluster_sizes": {str(k): v["sizes"] for k, v in contexts.items()},
         "rows": rows,
     }, indent=2))
     for row in rows:
