@@ -44,8 +44,13 @@ def compute_community_context(
     original_adjacency: torch.Tensor,
     clusterer: HyperbolicKMeans,
     node_ids: Sequence[Hashable],
+    max_epochs: int | None = None,
 ) -> CommunityContext:
-    """Encode and cluster the original graph once, before edge removal."""
+    """Encode and cluster the given graph once, before edge removal.
+
+    ``max_epochs`` is passed to the clusterer's fit when given
+    (None keeps the clusterer default, 40 for HyperbolicKMeans).
+    """
     if len(node_ids) != features.shape[0] or len(set(node_ids)) != len(node_ids):
         raise ValueError("node_ids must uniquely identify every feature row")
     with torch.no_grad():
@@ -55,7 +60,10 @@ def compute_community_context(
         raise ValueError("original-graph embeddings must be finite")
     if np.any(np.linalg.norm(points, axis=1) >= 1.0):
         raise ValueError("c=1.0 community embeddings must lie inside the unit ball")
-    centers, labels = clusterer.fit(points)
+    if max_epochs is None:
+        centers, labels = clusterer.fit(points)
+    else:
+        centers, labels = clusterer.fit(points, max_epochs=max_epochs)
     if not np.isfinite(centers).all() or not np.isfinite(labels).all():
         raise ValueError("community clustering produced non-finite results")
     center_tensor = torch.as_tensor(

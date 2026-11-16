@@ -1,0 +1,69 @@
+# Cora edge-recovery stability experiment (leakage-free, cumulative series).
+# Every parameter of the run lives here; the resolved file is saved with the results.
+# Decisions: project_context.md, Decisions 1, 2, 4, 5, 6.
+
+[run]
+name = "cora_edge_recovery"
+output_root = "artifacts/runs"   # override with --output-root (e.g. Google Drive on Colab)
+device = "auto"                  # "auto" | "cpu" | "cuda"
+
+[data]
+dataset = "Cora"                 # Planetoid Cora, row-normalised features
+root = "data"
+download = true
+
+[split]
+# Edge split, done once. Pool edges are the only edges ever removed and are never
+# seen in training (encoder, denoiser, community centres).
+seed = 20261116
+train_fraction = 0.5
+val_fraction = 0.1
+pool_fraction = 0.4
+# Non-edge control pairs (false-positive reference); never used as training negatives.
+control_pairs = 20000
+
+[model]
+seed = 20261117
+dim = 16
+num_layers = 2
+curvature = 1.0
+final_activation = "relu"        # "relu" | "leaky_relu"
+activation = "relu"              # hidden HGCN activation (torch.nn.functional name)
+dropout = 0.0
+bias = false
+use_attention = false
+fermi_dirac_r = 2.0
+fermi_dirac_t = 1.0
+
+[autoencoder]
+max_epochs = 2000
+patience = 200                   # early stopping on validation AUC
+learning_rate = 0.01
+negatives_per_positive = 1       # resampled every epoch
+
+[denoiser]
+epochs = 5000
+learning_rate = 0.001
+noise_formula = "exact"          # "exact" | "upstream"  (Decision 5)
+
+[community]
+n_clusters = 7                   # hyperbolic K-means on train-graph embeddings
+max_epochs = 40
+seed = 20261118
+
+[perturbation]
+# Cumulative damage: each series is one ordering of the pool; level L removes the
+# first round(L * |E|) edges of that ordering, so levels are nested inside a series.
+seed = 20261119
+damage_fractions = [0.10, 0.20, 0.30]   # fraction of ALL edges
+series = 20                             # N independent cumulative series per attack
+attacks = ["random", "targeted_weighted", "targeted_deterministic"]
+# random                 : uniform ordering of the pool
+# targeted_weighted      : ordering sampled without replacement, P ~ k_i * k_j
+# targeted_deterministic : k_i * k_j descending (one reference series)
+
+[recovery]
+seed = 20261120
+t_star = 7
+tau = 0.5
+reconstructions = 10             # K per damaged graph

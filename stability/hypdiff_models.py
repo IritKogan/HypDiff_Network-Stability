@@ -14,6 +14,8 @@ here, as a subclass, so that the diff against upstream is explicit:
     * ``predict_noise_from_start``  selectable via ``noise_formula``:
       ``"exact"`` inverts ``q_sample`` exactly; ``"upstream"`` calls the original
       upstream method unchanged. See tests/test_predict_noise_from_start.py.
+    * ``tran_direction``  vectorised copy of the upstream per-node loop
+      (same result; upstream loops over nodes in Python).
     * ``draw_noise`` / ``_denoise_from_tstar`` / ``sample_from_tstar``  new
       project methods for partial-noise recovery from t* < T.
 
@@ -43,12 +45,16 @@ FINAL_ACTIVATIONS = ("relu", "leaky_relu")
 
 
 class StabilityDiffusion(diffusion):
-    def __init__(self, args, dim, curvature=1.0, noise_formula=None):
+    def __init__(self, args, dim, curvature=1.0, noise_formula=None, device=None):
         # Copy of upstream diffusion.__init__ (see module docstring). The
         # construction order of submodules is unchanged, so parameter
         # initialisation and state_dict keys match upstream checkpoints.
         nn.Module.__init__(self)
-        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        # Schedule tensors are plain attributes (upstream), so Module.to() does not
+        # move them: the device must be chosen at construction.
+        if device is None:
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        device = torch.device(device)
         self.device = device
         self.prior = 1
         self.c = float(curvature)
@@ -89,6 +95,25 @@ class StabilityDiffusion(diffusion):
 
     # -- documented copies of upstream methods (self.c / device fixes) ------
 
+    @staticmethod
+    def _stack(vectors, like):
+        if isinstance(vectors, torch.Tensor):
+            return vectors.to(device=like.device)
+        return torch.stack([torch.as_tensor(v) for v in vectors]).to(device=like.device)
+
+    @staticmethod
+    def _labels(labels, like):
+        return torch.as_tensor(labels, dtype=torch.long).to(device=like.device)
+
+    def tran_direction(self, direction_vector, gaussian_point, labels):
+        # Vectorised upstream loop: gaussian_point[i] *= sign(direction[labels[i]]),
+        # updated in place like upstream.
+        signs = torch.sign(self._stack(direction_vector, gaussian_point)[
+            self._labels(labels, gaussian_point)
+        ])
+        gaussian_point.copy_(gaussian_point * signs)
+        return gaussian_point
+
     def cal_u0(self, data):
         u = []
         for x in data:
@@ -124,9 +149,9 @@ class StabilityDiffusion(diffusion):
         if not restrict:
             x_start = self.manifold.logmap0(x, c=self.c)
         else:
-            x_start = x
-            for i, x_emb in enumerate(x_start):
-                x_start[i] = self.manifold.logmap(u0[labels[i]], x_emb, c=self.c)
+            # Vectorised upstream loop x_start[i] = logmap(u0[labels[i]], x[i]).
+            centers = self._stack(u0, x).to(dtype=x.dtype)[self._labels(labels, x)]
+            x_start = self.manifold.logmap(centers, x, c=self.c)
         x_start = self.normalization(x_start)
         xt = self.q_sample(x_start=x_start, t=t, direction=direction, noise=noise,
                            labels=labels, u0=u0, restrict=True)
@@ -229,14 +254,8 @@ class StabilityDiffusion(diffusion):
         prototypes = prototypes.to(
             device=damaged_embeddings.device, dtype=damaged_embeddings.dtype
         )
-        tangent = torch.stack(
-            [
-                self.manifold.logmap(
-                    prototypes[labels[index]], embedding, c=self.c
-                )
-                for index, embedding in enumerate(damaged_embeddings)
-            ]
-        )
+        node_prototypes = prototypes[labels]
+        tangent = self.manifold.logmap(node_prototypes, damaged_embeddings, c=self.c)
         tangent_normalized = self.normalization(tangent)
         if not torch.isfinite(tangent_normalized).all():
             raise ValueError("damaged embeddings produced non-finite tangent coordinates")
@@ -252,17 +271,7 @@ class StabilityDiffusion(diffusion):
             generator,
         )
         recovered_tangent = self.renormal(recovered_tangent, tangent)
-        recovered = torch.stack(
-            [
-                self.manifold.expmap(
-                    recovered_tangent[index],
-                    prototypes[labels[index]],
-                    c=self.c,
-                )
-                for index in range(damaged_embeddings.shape[0])
-            ]
-        )
-        return recovered
+        return self.manifold.expmap(recovered_tangent, node_prototypes, c=self.c)
 
 
 def _leaky_relu(x):

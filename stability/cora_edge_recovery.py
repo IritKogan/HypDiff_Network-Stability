@@ -1,3 +1,11 @@
+"""SUPERSEDED by stability/edge_recovery_experiment.py + configs/cora.toml.
+
+Kept only to reproduce earlier pilot artifacts. Known problems (2026-11-16):
+removed edges are drawn from all edges (including encoder training edges), the
+denoiser and community context use the full original graph, K-means uses 2
+clusters, and there is a single cumulative mask series.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
