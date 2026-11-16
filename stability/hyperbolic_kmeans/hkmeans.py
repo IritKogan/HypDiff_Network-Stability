@@ -8,6 +8,8 @@
 #    (upstream silently returned eps).
 #  * update_theta: step norm capped at 1, non-finite step/centroid raises.
 #  * HyperbolicKMeans: curvature parameter (only 1.0 supported), passed to poincare_dist.
+#  * exp_map: Minkowski norm instead of Euclidean norm + re-projection onto the
+#    hyperboloid (2026-11-16). Upstream version pushes centroids to the boundary.
 # import libraries
 import numpy as np
 import matplotlib.pyplot as plt
@@ -28,7 +30,18 @@ def exp_map(v, theta, eps=1e-6):
     # v: tangent vector in minkowski space
     # theta: parameter vector in hyperboloid with centroid coordinates
     # project vector v from tangent minkowski space -> hyperboloid
-    return np.cosh(norm(v))*theta + np.sinh(norm(v)) * v / (norm(v) + eps)
+    # Project fix (2026-11-16): upstream used the Euclidean norm of v. The
+    # hyperboloid exponential map needs the Minkowski norm sqrt(<v,v>_L); with
+    # the Euclidean norm the result leaves the hyperboloid (<x,x>_L > -1 ... -9)
+    # and the Frechet mean drifts to the Poincare boundary (all Cora centres
+    # ended at norm 0.996). The result is also re-projected onto the hyperboloid
+    # to remove floating-point drift.
+    v_norm = np.sqrt(max(hyperboloid_dot(v, v), 0.0))
+    if v_norm < eps:
+        return theta.copy()
+    point = np.cosh(v_norm) * theta + np.sinh(v_norm) * v / v_norm
+    point[-1] = np.sqrt(1.0 + np.dot(point[:-1], point[:-1]))
+    return point
 
 def minkowski_distance_gradient(u, v):
     # u,v in hyperboloid
