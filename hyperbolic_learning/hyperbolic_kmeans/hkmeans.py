@@ -23,9 +23,7 @@ def exp_map(v, theta, eps=1e-6):
 def minkowski_distance_gradient(u, v):
     # u,v in hyperboloid
     # returns gradient with respect to u
-    dot = hyperboloid_dot(u, v)
-    denominator = np.sqrt(max(dot**2 - 1.0, 1e-12))
-    return -v / denominator
+    return -1*(hyperboloid_dot(u,v)**2 - 1)**-1/2 * v
 
 def minkowski_loss_gradient(theta, X):
     # X : array with points in hyperboloid cluster
@@ -34,9 +32,11 @@ def minkowski_loss_gradient(theta, X):
     distances = np.array([-1*hyperboloid_dist(theta, x) for x in X]).reshape(-1,1)
     distance_grads = np.array([minkowski_distance_gradient(theta, x) for x in X])
     grad_loss = 2*np.mean(distances*distance_grads, axis=0)
-    if not np.isfinite(grad_loss).all():
-        raise FloatingPointError('non-finite Fréchet-mean gradient')
-    return grad_loss
+    if np.isnan(grad_loss).any():
+        print('Hyperboloid dist returned nan value')
+        return eps
+    else:
+        return grad_loss
 
 def project_to_tangent(theta, minkowski_grad):
     # grad: gradient vector in ambient Minkowski space
@@ -46,16 +46,7 @@ def project_to_tangent(theta, minkowski_grad):
 
 def update_theta(theta, hyperboloid_grad, alpha=0.1):
     # theta: parameter vector in hyperboloid with centroid coordinates
-    step = -alpha * hyperboloid_grad
-    step_norm = norm(step)
-    if not np.isfinite(step_norm):
-        raise FloatingPointError('non-finite hyperbolic centroid step')
-    if step_norm > 1.0:
-        step = step / step_norm
-    candidate = exp_map(step, theta)
-    if not np.isfinite(candidate).all():
-        raise FloatingPointError('non-finite hyperbolic centroid')
-    return candidate
+    return exp_map(-1*alpha*hyperboloid_grad, theta)
 
 def frechet_loss(theta, X):
     s = X.shape[0]
@@ -91,16 +82,11 @@ class HyperbolicKMeans():
     API design is modeled on the standard scikit-learn Classifier API
     """
     
-    def __init__(self,n_clusters=6,max_iter=300,tol=1e-8,verbose=False,curvature=1.0):
-        if not np.isclose(curvature, 1.0):
-            raise ValueError(
-                "HyperbolicKMeans conversion utilities currently require curvature=1.0"
-            )
+    def __init__(self,n_clusters=6,max_iter=300,tol=1e-8,verbose=False):
         self.n_clusters = n_clusters
         self.max_iter = max_iter
         self.tol = tol
         self.verbose = verbose
-        self.curvature = float(curvature)
         self.labels = None
         self.cluster_centers_ = None
         self.manifold=PoincareBall()
@@ -165,9 +151,7 @@ class HyperbolicKMeans():
         n = self.centroids.shape[0]
         var_C = []
         for i in range(n):
-            var_C.append(np.mean(np.array([
-                poincare_dist(self.centroids[i], x, c=self.curvature) for x in X
-            ])))
+            var_C.append(np.mean(np.array([poincare_dist(self.centroids[i], x) for x in X])))
         if return_all:
             self.variances = var_C
         else:
@@ -218,10 +202,7 @@ class HyperbolicKMeans():
                 # zero out current cluster assignment
                 self.assignments[i, :] = np.zeros((1, self.n_clusters))
                 # find closest centroid (in Poincare disk)
-                centroid_distances = np.array([
-                    poincare_dist(X[i], centroid, c=self.curvature)
-                    for centroid in self.centroids
-                ])
+                centroid_distances = np.array([poincare_dist(X[i], centroid) for centroid in self.centroids])
                 cx = np.argmin(centroid_distances)
                 self.inertia_ += centroid_distances[cx]**2
                 self.assignments[i][cx] = 1
@@ -248,10 +229,7 @@ class HyperbolicKMeans():
         labels = np.zeros((n, self.n_clusters))
         # find closest centroid (in Poincare disk)
         for i in range(n):
-            centroid_distances = np.array([
-                poincare_dist(X[i], centroid, c=self.curvature)
-                for centroid in self.centroids
-            ])
+            centroid_distances = np.array([poincare_dist(X[i], centroid) for centroid in self.centroids])
             cx = np.argmin(centroid_distances)
             labels[i][cx] = 1
         return labels

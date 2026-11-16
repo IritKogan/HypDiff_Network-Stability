@@ -39,9 +39,9 @@ class BaseModel(nn.Module):
             return val
         return d() if callable(d) else d
     def cal_u0(self,x):
-       x=self.manifold.logmap0(x,c=self.c)
+       x=self.manifold.logmap0(x,c=1.0)
        u0=torch.mean(x,dim=0)
-       u0=self.manifold.expmap0(u0,c=self.c)
+       u0=self.manifold.expmap0(u0,c=1.0)
        return u0
     def extract(self, a, t, x_shape):
        b, *_ = t.shape

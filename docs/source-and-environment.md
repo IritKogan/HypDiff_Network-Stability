@@ -91,3 +91,24 @@ steps. Thus the book's 1,000-step benchmark cannot be attributed to an
 existing, end-to-end Phase B implementation. Selecting or adapting a path,
 dataset interpretation, and step-count procedure is deferred for the next
 research review; no benchmark was run in WP1.
+
+## Upstream boundary (2026-11-16)
+
+All upstream HypDiff files are byte-identical to RingBDStack/HypDiff @
+`1620e3cc6ac7a558055e9888257568986765f082` (line endings aside);
+`tests/test_hypdiff_models.py` enforces this with SHA-256 hashes in
+`tests/data/upstream_hypdiff_1620e3c.sha256`. The only remaining deviation is
+`.gitignore` (project data/artifact paths), pending a decision.
+
+Project changes to model code live in `stability/`:
+
+| Upstream | Project replacement | Change |
+|---|---|---|
+| `models/direction_diffusion.py::diffusion` | `stability/hypdiff_models.py::StabilityDiffusion` | CPU-safe init (`.to(device)`), curvature parameter, `noise_formula` option (`exact` / `upstream`), t* partial recovery (`sample_from_tstar`) |
+| `models/base_models.py::LPModel` + `models/encoders.py::HGCN` | `stability/hypdiff_models.py::StabilityLPModel` | optional `final_activation="leaky_relu"` on the last HGCN layer |
+| `hyperbolic_learning/hyperbolic_kmeans/{hkmeans,util_hk}.py` | `stability/hyperbolic_kmeans/` (documented copy) | gradient precedence fix, explicit errors on non-finite values, curvature parameter |
+
+The CPU denoiser block described above is resolved by `StabilityDiffusion`.
+The refactor was verified to reproduce the previous code bit-for-bit (encoder
+and denoiser weights, embeddings, K-means labels/centroids, training loss,
+t*=7 and t*=50 recoveries, for both final activations).

@@ -11,22 +11,17 @@ def norm(x, axis=None):
 # arbritray sign gives different signatures (+, +, +, -), (+, -, -, -)
     
 # distance in poincare disk
-def poincare_dist(u, v, eps=0.0, c=1.0):
-    if c <= 0:
-        raise ValueError("curvature must be positive")
-    denominator = (1 - c * norm(u) ** 2) * (1 - c * norm(v) ** 2) + eps
-    if denominator <= 0:
-        raise ValueError("Poincare points must lie inside the curvature-scaled ball")
-    d = 1 + 2 * c * norm(u - v) ** 2 / denominator
+def poincare_dist(u, v, eps=1e-5):
+    d = 1 + 2 * norm(u-v)**2 / ((1 - norm(u)**2) * (1 - norm(v)**2) + eps)
     return np.arccosh(d)
 
 # compute symmetric poincare distance matrix
-def poincare_distances(embedding, c=1.0):
+def poincare_distances(embedding):
     n = embedding.shape[0]
     dist_matrix = np.zeros((n, n))
     for i in range(n):
         for j in range(i+1, n):
-            dist_matrix[i][j] = poincare_dist(embedding[i], embedding[j], c=c)
+            dist_matrix[i][j] = poincare_dist(embedding[i], embedding[j])
     return dist_matrix
 
 # convert array from poincare disk to hyperboloid
@@ -84,10 +79,14 @@ def minkowski_dot(u, v):
 # hyperboloid distance function
 def hyperboloid_dist(u, v, eps=1e-6, metric='lorentz'):
     if metric == 'minkowski':
-        distance_argument = -1 * minkowski_dot(u, v)
+        dist = np.arccosh(-1*minkowski_dot(u, v))
     else:
-        distance_argument = -1 * hyperboloid_dot(u, v)
-    return np.arccosh(max(1.0, distance_argument))
+        dist = np.arccosh(-1*hyperboloid_dot(u, v))
+    if np.isnan(dist):
+        #print('Hyperboloid dist returned nan value')
+        return eps
+    else:
+        return dist
 
 # compute symmetric hyperboloid distance matrix
 def hyperboloid_distances(embedding):

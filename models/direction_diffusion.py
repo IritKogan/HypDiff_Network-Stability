@@ -82,14 +82,11 @@ def get_alphas(timesteps):
 
 
 class diffusion(nn.Module):
-    def __init__(self, args, dim, curvature=1.0):
+    def __init__(self, args, dim):
         super(diffusion, self).__init__()
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.device = device
         self.prior = 1
-        self.c = float(curvature)
-        if self.c <= 0:
-            raise ValueError("curvature must be positive")
         self.gcn = gcndec(dim)
         self.gcn.to(device)
         self.mlp =mlp(dim)
@@ -108,17 +105,18 @@ class diffusion(nn.Module):
         self.posterior_mean_coef1 = betas * torch.sqrt(self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
         self.posterior_mean_coef2 = (1. - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (
                     1. - self.alphas_cumprod)
-        self.alphas = self.alphas.to(device)
-        self.alphas_cumprod = self.alphas_cumprod.to(device)
-        self.alphas_cumprod_prev = self.alphas_cumprod_prev.to(device)
-        self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
-        self.sqrt_recip_alphas_cumprod = self.sqrt_recip_alphas_cumprod.to(device)
-        self.sqrt_recipm1_alphas_cumprod = self.sqrt_recipm1_alphas_cumprod.to(device)
-        self.posterior_variance = self.posterior_variance.to(device)
-        self.minus_alphas_cumprod = self.minus_alphas_cumprod.to(device)
-        self.posterior_log_variance_clipped = self.posterior_log_variance_clipped.to(device)
-        self.posterior_mean_coef1 = self.posterior_mean_coef1.to(device)
-        self.posterior_mean_coef2 = self.posterior_mean_coef2.to(device)
+        self.alphas = self.alphas.cuda()
+        self.alphas_cumprod = self.alphas_cumprod.cuda()
+        self.alphas_cumprod_prev = self.alphas_cumprod_prev.cuda()
+        self.sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.cuda()
+        self.sqrt_recip_alphas_cumprod = self.sqrt_recip_alphas_cumprod.cuda()
+        self.sqrt_recipm1_alphas_cumprod = self.sqrt_recipm1_alphas_cumprod.cuda()
+        self.posterior_variance = self.posterior_variance.cuda()
+        self.minus_alphas_cumprod=self.minus_alphas_cumprod.cuda()
+        self.posterior_log_variance_clipped = self.posterior_log_variance_clipped.cuda()
+        self.posterior_mean_coef1 = self.posterior_mean_coef1.cuda()
+        self.posterior_mean_coef2 = self.posterior_mean_coef2.cuda()
+        self.c=1.0
         self.dc = FermiDiracDecoder(r=args.r, t=args.t)
 
     def exists(self, x):
@@ -133,9 +131,9 @@ class diffusion(nn.Module):
 
         u = []
         for x in data:
-            x = self.manifold.logmap0(x, c=self.c)
+            x = self.manifold.logmap0(x, c=1.0)
             u0 = torch.mean(x, dim=0)
-            u0 = self.manifold.expmap0(u0, c=self.c)
+            u0 = self.manifold.expmap0(u0, c=1.0)
             u.append(u0)
         # u0=self.manifold.expmap0(u0,c=1.0)
         return u
@@ -188,7 +186,7 @@ class diffusion(nn.Module):
     def x_tran(self, x0, labels, u0):
         for i, x in enumerate(x0):
             u = u0[labels[i]]
-            x = self.manifold.logmap(u, x, c=self.c)
+            x = self.manifold.logmap(u, x, c=1.0)
         return x0
     def getpri(self,t):
         c_num=np.sqrt(self.c)
@@ -202,8 +200,8 @@ class diffusion(nn.Module):
         if restrict:
             noise= self.tran_direction(direction, noise,labels)
         alphas_cumprod, minus_alphas_cumprod = self.get_alphas2(self.num_timesteps)
-        alphas_cumprod = alphas_cumprod.to(x_start.device)
-        minus_alphas_cumprod = minus_alphas_cumprod.to(x_start.device)
+        alphas_cumprod = alphas_cumprod.cuda()
+        minus_alphas_cumprod = minus_alphas_cumprod.cuda()
         pri_cumprod=self.getpri(t)
         if not restrict:
             return (
@@ -230,10 +228,12 @@ class diffusion(nn.Module):
 
 
     def predict_noise_from_start(self, x_t, t, x0):
-        prior = self.getpri(t)
-        alpha_bar = self.extract(self.sqrt_alphas_cumprod, t, x_t.shape)
-        alpha_bar_complement = self.extract(self.minus_alphas_cumprod, t, x_t.shape)
-        return (x_t - (alpha_bar + prior) * x0) / alpha_bar_complement
+        prio=self.getpri(t)
+        # predicte Gaussian noise from the starting state of the prediction graph
+        return (
+                ((self.extract(self.sqrt_recip_alphas_cumprod, t, x_t.shape)+prio) * x_t - x0) / \
+                self.extract(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
+        )
 
     def q_posterior(self, x_start, x_t, t):
         # Compute the mean and variance of the posterior distribution q(x_t | x_{t-1}).
@@ -297,13 +297,13 @@ class diffusion(nn.Module):
         img = torch.randn(shape, device=device)
         direction = []
         for u in u0:
-            direction.append(self.manifold.logmap0(u, c=self.c))
+            direction.append(self.manifold.logmap0(u, c=1.0))
         img=self.tran_direction(direction,img,lables)
         self_condition = None
         x_start = None
         h=x
         for i, h_data in enumerate(h):
-            h[i] = self.manifold.logmap(u0[lables[i]], h_data, c=self.c)
+            h[i] = self.manifold.logmap(u0[lables[i]], h_data, c=1.0)
         h2=self.normalization(h)
 
         img=img+h2
@@ -327,119 +327,9 @@ class diffusion(nn.Module):
         #ret=h
         for i,x_pred in enumerate(ret):
             #ret[i]=self.manifold.expmap(u0[lables[i]],x0_pred,c=1.0)
-            ret[i]=self.manifold.expmap(ret[i],u20[lables[i]],c=self.c)
+            ret[i]=self.manifold.expmap(ret[i],u20[lables[i]],c=1.0)
             
         return ret
-
-    def draw_noise(self, x_start, generator):
-        return torch.randn(
-            x_start.shape,
-            dtype=x_start.dtype,
-            device=x_start.device,
-            generator=generator,
-        )
-
-    def _denoise_from_tstar(
-        self, x_start, edge_index, direction, labels, t_star, generator
-    ):
-        if not 0 <= t_star < self.num_timesteps:
-            raise ValueError(
-                f"t_star must be in [0, {self.num_timesteps - 1}]"
-            )
-        noise = self.draw_noise(x_start, generator)
-        x_t = self.q_sample(
-            x_start=x_start,
-            t=torch.full(
-                (x_start.shape[0],), t_star, device=x_start.device, dtype=torch.long
-            ),
-            direction=direction,
-            noise=noise,
-            labels=labels,
-            u0=None,
-            restrict=True,
-        )
-
-        for timestep in range(t_star, -1, -1):
-            batch_t = torch.full(
-                (x_t.shape[0],), timestep, device=x_t.device, dtype=torch.long
-            )
-            normalized_t = batch_t.to(dtype=torch.float32) / self.num_timesteps
-            x0 = self.gcn(x_t, edge_index, normalized_t).clamp(-1.0, 1.0)
-            if timestep == 0:
-                return x0
-
-            noise = self.predict_noise_from_start(x_t, batch_t, x0)
-            previous_t = torch.full_like(batch_t, timestep - 1)
-            x_t = self.q_sample(
-                x_start=x0,
-                t=previous_t,
-                direction=direction,
-                noise=noise,
-                labels=labels,
-                u0=None,
-                restrict=False,
-            )
-        raise RuntimeError("reverse diffusion loop did not produce a clean endpoint")
-
-    def sample_from_tstar(
-        self,
-        damaged_embeddings,
-        damaged_adjacency,
-        labels,
-        prototypes,
-        t_star,
-        generator,
-    ):
-        """Recover embeddings using only damaged graph inputs and frozen context."""
-        if labels.ndim != 1 or labels.shape[0] != damaged_embeddings.shape[0]:
-            raise ValueError("labels must contain one community index per node")
-        if prototypes.ndim != 2 or prototypes.shape[1] != damaged_embeddings.shape[1]:
-            raise ValueError("prototypes must have shape (communities, embedding_dim)")
-        if labels.numel() and (
-            int(labels.min()) < 0 or int(labels.max()) >= prototypes.shape[0]
-        ):
-            raise ValueError("labels contain an invalid community index")
-        if damaged_adjacency.shape[0] != damaged_embeddings.shape[0]:
-            raise ValueError("damaged adjacency and embeddings must have matching nodes")
-
-        labels = labels.to(device=damaged_embeddings.device, dtype=torch.long)
-        prototypes = prototypes.to(
-            device=damaged_embeddings.device, dtype=damaged_embeddings.dtype
-        )
-        tangent = torch.stack(
-            [
-                self.manifold.logmap(
-                    prototypes[labels[index]], embedding, c=self.c
-                )
-                for index, embedding in enumerate(damaged_embeddings)
-            ]
-        )
-        tangent_normalized = self.normalization(tangent)
-        if not torch.isfinite(tangent_normalized).all():
-            raise ValueError("damaged embeddings produced non-finite tangent coordinates")
-        direction = torch.stack(
-            [self.manifold.logmap0(prototype, c=self.c) for prototype in prototypes]
-        )
-        recovered_tangent = self._denoise_from_tstar(
-            tangent_normalized,
-            self.edge(damaged_adjacency.coalesce()),
-            direction,
-            labels,
-            t_star,
-            generator,
-        )
-        recovered_tangent = self.renormal(recovered_tangent, tangent)
-        recovered = torch.stack(
-            [
-                self.manifold.expmap(
-                    recovered_tangent[index],
-                    prototypes[labels[index]],
-                    c=self.c,
-                )
-                for index in range(damaged_embeddings.shape[0])
-            ]
-        )
-        return recovered
 
 
     def forward(self, x,adj,labels,u0,restrict=True,graphset=False):
@@ -451,15 +341,15 @@ class diffusion(nn.Module):
         noise.to(h.device)
         direction=[]
         for u in u0:
-             direction.append(self.manifold.logmap0(u,c=self.c))
+             direction.append(self.manifold.logmap0(u,c=1.0))
         if not restrict:
-            x_start = self.manifold.logmap0(x, c=self.c)
+            x_start = self.manifold.logmap0(x, c=1.0)
         else:
             x_start=x
             #print(x_start.shape)
             for i,x_emb in enumerate(x_start):
                 #print(x_emb.shape)
-                x_start[i]=self.manifold.logmap(u0[labels[i]],x_emb,c=self.c)
+                x_start[i]=self.manifold.logmap(u0[labels[i]],x_emb,c=1.0)
         x_start=self.normalization(x_start)
         xt = self.q_sample(x_start=x_start, t=t, direction=direction, noise=noise, labels=labels, u0=u0,restrict=True)
         t = t / self.num_timesteps

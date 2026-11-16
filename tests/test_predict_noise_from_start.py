@@ -19,7 +19,9 @@ Substituting x_t gives the closed-form error
     b(t) = prior * sqrt(abar)
 
 These tests build x_t from a *known* noise tensor and check both formulas at
-t = 7 (our partial-noise recovery t*) and t = 199 (= T - 1).
+t = 7 (our partial-noise recovery t*) and t = 199 (= T - 1). Both are reached
+through ``StabilityDiffusion(noise_formula=...)``; "upstream" delegates to the
+unmodified upstream method in models/direction_diffusion.py.
 """
 
 from types import SimpleNamespace
@@ -27,14 +29,14 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from models.direction_diffusion import diffusion
+from stability.hypdiff_models import StabilityDiffusion
 
 NUM_NODES = 64
 DIM = 16
 
 
-def upstream_predict_noise_from_start(model, x_t, t, x0):
-    """Verbatim copy of upstream HypDiff 1620e3c, models/direction_diffusion.py."""
+def reference_upstream_formula(model, x_t, t, x0):
+    """Verbatim copy of upstream HypDiff 1620e3c predict_noise_from_start."""
     prio = model.getpri(t)
     return (
         ((model.extract(model.sqrt_recip_alphas_cumprod, t, x_t.shape) + prio) * x_t - x0)
@@ -42,10 +44,25 @@ def upstream_predict_noise_from_start(model, x_t, t, x0):
     )
 
 
+def _make(noise_formula):
+    torch.manual_seed(0)
+    return StabilityDiffusion(
+        SimpleNamespace(r=2.0, t=1.0), dim=DIM, noise_formula=noise_formula
+    ).to("cpu")
+
+
 @pytest.fixture(scope="module")
 def model():
-    torch.manual_seed(0)
-    return diffusion(SimpleNamespace(r=2.0, t=1.0), dim=DIM).to("cpu")
+    return _make("exact")
+
+
+@pytest.fixture(scope="module")
+def upstream_model():
+    return _make("upstream")
+
+
+def upstream_predict_noise_from_start(model, x_t, t, x0):
+    return _make("upstream").predict_noise_from_start(x_t, t, x0)
 
 
 @pytest.fixture(scope="module")
@@ -128,3 +145,25 @@ def test_new_formula_recovers_direction_restricted_noise(model, known_tensors, t
     recovered = model.predict_noise_from_start(x_t, _batch_t(timestep), x0)
 
     torch.testing.assert_close(recovered, expected, atol=1e-10, rtol=0.0)
+
+
+@pytest.mark.parametrize("timestep", [7, 199])
+def test_upstream_option_calls_unmodified_upstream_method(upstream_model, known_tensors, timestep):
+    x0, eps = known_tensors
+    x_t = _forward(upstream_model, x0, eps, timestep)
+    t = _batch_t(timestep)
+
+    torch.testing.assert_close(
+        upstream_model.predict_noise_from_start(x_t, t, x0),
+        reference_upstream_formula(upstream_model, x_t, t, x0),
+        atol=0.0,
+        rtol=0.0,
+    )
+
+
+def test_noise_formula_comes_from_args_and_rejects_unknown_values():
+    args = SimpleNamespace(r=2.0, t=1.0, noise_formula="upstream")
+    assert StabilityDiffusion(args, dim=DIM).noise_formula == "upstream"
+    assert StabilityDiffusion(SimpleNamespace(r=2.0, t=1.0), dim=DIM).noise_formula == "exact"
+    with pytest.raises(ValueError, match="noise_formula"):
+        StabilityDiffusion(SimpleNamespace(r=2.0, t=1.0), dim=DIM, noise_formula="ddpm")

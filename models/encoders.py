@@ -3,7 +3,6 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 import manifolds
 from layers.att_layers import GraphAttentionLayer
@@ -100,18 +99,11 @@ class HGCN(Encoder):
         assert args.num_layers > 1
         dims, acts, self.curvatures = hyp_layers.get_dim_act_curv(args)
         self.curvatures.append(self.c)
-        final_activation = getattr(args, "final_activation", "relu")
-        if final_activation not in {"relu", "leaky_relu"}:
-            raise ValueError(
-                "final_activation must be 'relu' or 'leaky_relu'"
-            )
         hgc_layers = []
         for i in range(len(dims) - 1):
             c_in, c_out = self.curvatures[i], self.curvatures[i + 1]
             in_dim, out_dim = dims[i], dims[i + 1]
             act = acts[i]
-            if i == len(dims) - 2 and final_activation == "leaky_relu":
-                act = lambda x: F.leaky_relu(x, negative_slope=0.01)
             hgc_layers.append(
                     hyp_layers.HyperbolicGraphConvolution(
                             self.manifold, in_dim, out_dim, c_in, c_out, args.dropout, act, args.bias, args.use_att, args.local_agg
