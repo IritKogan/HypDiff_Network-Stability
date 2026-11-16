@@ -10,9 +10,8 @@ from stability.imdb_binary_dataset import (
     select_imdb_binary_splits,
     with_node_identity_features,
 )
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
-from models.base_models import LPModel
-from models.direction_diffusion import diffusion
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hypdiff_models import StabilityDiffusion, StabilityLPModel
 from stability.partial_recovery import compute_community_context, reconstruct_k
 from stability.pilot_config import PilotConfig
 from stability.imdb_binary_recovery_pilot import _sampling_intervals
@@ -146,8 +145,8 @@ def test_node_ids_and_feature_rows_survive_perturbation_with_isolated_node(tmp_p
     torch.manual_seed(11)
     config = PilotConfig(curvature=1.0, tau=0.5)
     args = model_args(graph, config)
-    encoder = LPModel(args).cpu().eval()
-    denoiser = diffusion(args, dim=args.dim, curvature=config.curvature).cpu().eval()
+    encoder = StabilityLPModel(args).cpu().eval()
+    denoiser = StabilityDiffusion(args, dim=args.dim, curvature=config.curvature).cpu().eval()
     node_index = {node: index for index, node in enumerate(graph.node_ids)}
     original_edges = tuple(
         (node_index[source], node_index[target]) for source, target in graph.edges

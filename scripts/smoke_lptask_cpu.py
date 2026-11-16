@@ -6,8 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 
-from models.base_models import LPModel
-from models.direction_diffusion import diffusion
+from stability.hypdiff_models import StabilityDiffusion, StabilityLPModel
 
 
 def main() -> None:
@@ -34,8 +33,8 @@ def main() -> None:
         hid1=8,
         hid2=4,
     )
-    encoder = LPModel(args).cpu().eval()
-    denoiser = diffusion(SimpleNamespace(r=args.r, t=args.t), dim=args.dim).cpu().eval()
+    encoder = StabilityLPModel(args).cpu().eval()
+    denoiser = StabilityDiffusion(SimpleNamespace(r=args.r, t=args.t), dim=args.dim).cpu().eval()
 
     features = torch.tensor(
         [

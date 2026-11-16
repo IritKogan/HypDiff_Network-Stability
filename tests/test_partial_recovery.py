@@ -6,10 +6,9 @@ from unittest.mock import patch
 import numpy as np
 import torch
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
-from hyperbolic_learning.hyperbolic_kmeans.util_hk import poincare_dist
-from models.base_models import LPModel
-from models.direction_diffusion import diffusion
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hyperbolic_kmeans.util_hk import poincare_dist
+from stability.hypdiff_models import StabilityDiffusion, StabilityLPModel
 from stability.edge_perturbation import remove_edges
 from stability.partial_recovery import (
     compute_community_context,
@@ -74,8 +73,8 @@ class PartialRecoveryTests(unittest.TestCase):
         self.args = make_args()
         self.config = PilotConfig(curvature=1.0, tau=0.5)
         self.config.apply_to_args(self.args)
-        self.encoder = LPModel(self.args).cpu().eval()
-        self.denoiser = diffusion(
+        self.encoder = StabilityLPModel(self.args).cpu().eval()
+        self.denoiser = StabilityDiffusion(
             self.args, dim=self.args.dim, curvature=self.config.curvature
         ).cpu().eval()
         self.clusterer = HyperbolicKMeans(n_clusters=2, curvature=1.0)

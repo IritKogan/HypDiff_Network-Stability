@@ -1,12 +1,12 @@
 import numpy as np
 import pytest
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import (
+from stability.hyperbolic_kmeans.hkmeans import (
     minkowski_distance_gradient,
     minkowski_loss_gradient,
     update_theta,
 )
-from hyperbolic_learning.hyperbolic_kmeans.util_hk import (
+from stability.hyperbolic_kmeans.util_hk import (
     hyperboloid_pt_to_poincare,
 )
 

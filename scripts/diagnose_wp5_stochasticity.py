@@ -11,9 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import torch
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
-from models.base_models import LPModel
-from models.direction_diffusion import diffusion
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hypdiff_models import StabilityDiffusion, StabilityLPModel
 from stability.edge_perturbation import remove_edges
 from stability.partial_recovery import (
     CommunityContext,
@@ -205,8 +204,8 @@ def main():
         raise ValueError("saved removed-edge set does not match the recorded seed")
 
     args = make_args(len(node_ids), features.shape[1], config)
-    encoder = LPModel(args).cpu()
-    denoiser = diffusion(args, dim=args.dim, curvature=config.curvature).cpu()
+    encoder = StabilityLPModel(args).cpu()
+    denoiser = StabilityDiffusion(args, dim=args.dim, curvature=config.curvature).cpu()
     encoder.load_state_dict(
         torch.load(encoder_path, map_location="cpu", weights_only=True), strict=True
     )

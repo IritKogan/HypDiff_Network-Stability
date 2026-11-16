@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from sklearn.metrics import average_precision_score, roc_auc_score
 
-from models.base_models import LPModel
+from stability.hypdiff_models import StabilityLPModel
 from stability.edge_perturbation import remove_edges
 from stability.pilot_config import PilotConfig
 from stability.synthetic_instances import SyntheticGraph
@@ -93,7 +93,7 @@ def _train_variant(
     np.random.seed(model_seed)
     torch.manual_seed(model_seed)
     config = PilotConfig(curvature=1.0, tau=0.5)
-    model = LPModel(model_args(graph, config)).cpu()
+    model = StabilityLPModel(model_args(graph, config)).cpu()
     initial_hash = _state_hash(model)
     node_index = {node: index for index, node in enumerate(graph.node_ids)}
     original_adjacency = make_adjacency(len(graph.node_ids), original_edges_indexed)

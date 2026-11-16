@@ -13,9 +13,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
-from models.base_models import LPModel
-from models.direction_diffusion import diffusion
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hypdiff_models import StabilityDiffusion, StabilityLPModel
 from stability.edge_perturbation import remove_edges
 from stability.partial_recovery import (
     compute_community_context,
@@ -246,8 +245,8 @@ def main():
     )
     train_adjacency = make_adjacency(len(node_ids), train_edges)
     original_adjacency = make_adjacency(len(node_ids), original_index_edges)
-    encoder = LPModel(args).cpu()
-    denoiser = diffusion(args, dim=args.dim, curvature=config.curvature).cpu()
+    encoder = StabilityLPModel(args).cpu()
+    denoiser = StabilityDiffusion(args, dim=args.dim, curvature=config.curvature).cpu()
     autoencoder_losses, autoencoder_validation_losses = train_autoencoder(
         encoder,
         features,

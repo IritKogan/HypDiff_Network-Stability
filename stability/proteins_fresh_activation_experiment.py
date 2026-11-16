@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from sklearn.metrics import average_precision_score
 
-from models.base_models import LPModel
+from stability.hypdiff_models import StabilityLPModel
 from stability.edge_perturbation import remove_edges
 from stability.pilot_config import PilotConfig
 from stability.proteins_dataset import load_proteins_graphs
@@ -83,7 +83,7 @@ def _make_model(graph, activation: str, seed: int):
         PilotConfig(curvature=1.0, tau=0.5),
         final_activation=activation,
     )
-    return LPModel(args).cpu()
+    return StabilityLPModel(args).cpu()
 
 
 def _inputs(graph, perturbation):

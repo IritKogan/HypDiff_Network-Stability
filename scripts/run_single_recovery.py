@@ -14,9 +14,8 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
-from models.base_models import LPModel
-from models.direction_diffusion import diffusion
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hypdiff_models import StabilityDiffusion, StabilityLPModel
 from stability.edge_perturbation import remove_edges
 from stability.imdb_binary_dataset import (
     load_imdb_binary_graphs,
@@ -378,8 +377,8 @@ def run_single_recovery(
         )
     else:
         args = model_args(recovery_graph, config)
-        encoder = LPModel(args).cpu()
-        denoiser = diffusion(args, dim=args.dim, curvature=config.curvature).cpu()
+        encoder = StabilityLPModel(args).cpu()
+        denoiser = StabilityDiffusion(args, dim=args.dim, curvature=config.curvature).cpu()
         encoder.load_state_dict(
             torch.load(checkpoint_paths["autoencoder"], map_location="cpu", weights_only=True)
         )

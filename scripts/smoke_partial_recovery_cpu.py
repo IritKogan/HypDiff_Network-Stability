@@ -7,9 +7,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import torch
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
-from models.base_models import LPModel
-from models.direction_diffusion import diffusion
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hypdiff_models import StabilityDiffusion, StabilityLPModel
 from stability.edge_perturbation import remove_edges
 from stability.partial_recovery import (
     compute_community_context,
@@ -65,8 +64,8 @@ def main() -> None:
         hid1=8,
         hid2=4,
     ))
-    encoder = LPModel(args).cpu().eval()
-    denoiser = diffusion(
+    encoder = StabilityLPModel(args).cpu().eval()
+    denoiser = StabilityDiffusion(
         args, dim=args.dim, curvature=config.curvature
     ).cpu().eval()
     clusterer = HyperbolicKMeans(n_clusters=2, curvature=config.curvature)

@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from models.base_models import LPModel
+from stability.hypdiff_models import StabilityLPModel
 from stability.pilot_config import PilotConfig
 from stability.synthetic_instances import generate_synthetic_graph
 from stability.wp7_training import _edge_tensor, _loss, model_args
@@ -9,7 +9,7 @@ from stability.wp7_training import _edge_tensor, _loss, model_args
 
 def _model():
     graph = generate_synthetic_graph(71001, "calibration")
-    return LPModel(model_args(graph, PilotConfig()))
+    return StabilityLPModel(model_args(graph, PilotConfig()))
 
 
 def test_stable_link_loss_matches_fermi_dirac_binary_cross_entropy():

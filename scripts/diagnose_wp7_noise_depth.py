@@ -12,9 +12,8 @@ import numpy as np
 from sklearn.metrics import average_precision_score, roc_auc_score
 import torch
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
-from models.base_models import LPModel
-from models.direction_diffusion import diffusion
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hypdiff_models import StabilityDiffusion, StabilityLPModel
 from stability.edge_perturbation import remove_edges
 from stability.pilot_artifacts import load_pilot_artifact, save_pilot_artifact
 from stability.partial_recovery import (
@@ -61,8 +60,8 @@ def _file_hash(path: Path) -> str:
 def _load_graph_models(graph, saved_graph, checkpoint_dir: Path):
     config = PilotConfig(curvature=1.0, tau=0.5)
     args = model_args(graph, config)
-    encoder = LPModel(args).cpu()
-    denoiser = diffusion(args, dim=args.dim, curvature=config.curvature).cpu()
+    encoder = StabilityLPModel(args).cpu()
+    denoiser = StabilityDiffusion(args, dim=args.dim, curvature=config.curvature).cpu()
     encoder_path = checkpoint_dir / "autoencoder.pt"
     denoiser_path = checkpoint_dir / "denoiser.pt"
     encoder.load_state_dict(

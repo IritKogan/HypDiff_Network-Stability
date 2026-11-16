@@ -6,9 +6,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
-from models.base_models import LPModel
-from models.direction_diffusion import diffusion
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hypdiff_models import StabilityDiffusion, StabilityLPModel
 from stability.partial_recovery import (
     compute_community_context,
     decode_without_diffusion,
@@ -31,8 +30,8 @@ def load_saved_graph_models(
     model_seed: int,
 ):
     args = model_args(graph, config)
-    encoder = LPModel(args).cpu()
-    denoiser = diffusion(args, dim=args.dim, curvature=config.curvature).cpu()
+    encoder = StabilityLPModel(args).cpu()
+    denoiser = StabilityDiffusion(args, dim=args.dim, curvature=config.curvature).cpu()
     encoder_path = checkpoint_dir / graph.graph_id / "autoencoder.pt"
     denoiser_path = checkpoint_dir / graph.graph_id / "denoiser.pt"
     if not encoder_path.is_file() or not denoiser_path.is_file():

@@ -7,7 +7,7 @@ from typing import Callable, Hashable, Iterable, Sequence
 import numpy as np
 import torch
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
 from stability.edge_perturbation import Edge
 from stability.pilot_config import PilotConfig
 from stability.scoring import StabilityScore, score_recovery

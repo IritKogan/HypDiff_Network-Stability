@@ -1,6 +1,6 @@
 import torch
 
-from models.base_models import LPModel
+from stability.hypdiff_models import StabilityLPModel
 from stability.pilot_config import PilotConfig
 from stability.synthetic_instances import generate_synthetic_graph
 from stability.wp7_training import model_args
@@ -11,7 +11,7 @@ def _model(final_activation="relu"):
     args = model_args(
         graph, PilotConfig(), final_activation=final_activation
     )
-    return LPModel(args)
+    return StabilityLPModel(args)
 
 
 def test_final_activation_defaults_to_relu_and_leaky_relu_is_opt_in():

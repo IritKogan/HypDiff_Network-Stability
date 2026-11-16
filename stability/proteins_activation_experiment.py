@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from sklearn.metrics import average_precision_score
 
-from models.base_models import LPModel
+from stability.hypdiff_models import StabilityLPModel
 from stability.pilot_config import PilotConfig
 from stability.wp7_training import _edge_split, _edge_tensor, _loss, make_adjacency, model_args
 
@@ -62,7 +62,7 @@ def _make_model(graph, final_activation: str, model_seed: int):
     torch.manual_seed(model_seed)
     config = PilotConfig(curvature=1.0, tau=0.5)
     args = model_args(graph, config, final_activation=final_activation)
-    return LPModel(args).cpu()
+    return StabilityLPModel(args).cpu()
 
 
 def _graph_view(record):

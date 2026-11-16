@@ -5,7 +5,7 @@ import itertools
 import numpy as np
 import torch
 
-from hyperbolic_learning.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
+from stability.hyperbolic_kmeans.hkmeans import HyperbolicKMeans
 from stability.edge_perturbation import remove_edges
 from stability.partial_recovery import (
     decode_without_diffusion,
