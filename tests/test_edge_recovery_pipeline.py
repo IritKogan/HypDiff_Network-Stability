@@ -29,7 +29,7 @@ def raw_config():
 def tiny_config(**changes):
     raw = raw_config()
     raw["split"]["control_pairs"] = 40
-    raw["model"].update(dim=4)
+    raw["model"].update(dim=4, dropout=0.0)
     raw["autoencoder"].update(max_epochs=15, patience=5)
     raw["denoiser"].update(epochs=5)
     raw["community"].update(n_clusters=3, max_epochs=3)
@@ -73,7 +73,7 @@ def test_cora_config_loads_with_approved_defaults():
     assert config.recovery.reconstructions == 10
     assert config.recovery.t_star == 7
     assert config.community.n_clusters == 7
-    assert config.model.dim == 16
+    assert config.model.dim == 128 and config.model.dropout == 0.7
     assert config.denoiser.epochs == 5000
     assert config.autoencoder.max_epochs == 2000
     assert json.loads(json.dumps(config.to_dict()))["perturbation"]["series"] == 20
@@ -92,6 +92,11 @@ def test_cora_config_loads_with_approved_defaults():
         (lambda raw: raw["perturbation"].update(attacks=["degree"]), "attacks"),
         (lambda raw: raw["recovery"].update(t_star=200), "t_star"),
         (lambda raw: raw["denoiser"].update(noise_formula="ddpm"), "noise_formula"),
+        (lambda raw: raw["denoiser"].update(architecture="unet"), "architecture"),
+        (lambda raw: raw["denoiser"].update(training="supervised"), "training"),
+        (lambda raw: raw["denoiser"].update(train_t_max=0), "train_t_max"),
+        (lambda raw: raw["recovery"].update(tau_mode="auto"), "tau_mode"),
+        (lambda raw: raw["recovery"].update(target_fpr=0.0), "target_fpr"),
     ],
 )
 def test_config_rejects_invalid_files(mutate, message):
@@ -293,3 +298,93 @@ def test_end_to_end_run_writes_reproducible_results(graph, tmp_path):
             assert entry["edges_removed_per_series"] == removed[level, 0].sum()
             assert entry["pool_edges_evaluated"] == int((removed[level].sum(axis=0) > 0).sum())
             assert "p_e_same_class" in entry and "control_false_positive" in entry
+            assert 0.0 <= entry["auc_removed_vs_control"] <= 1.0
+    assert set(summary["thresholds"]) == {"diffusion", "no_diffusion", "clamp_only"}
+    assert (first / "validation_recovery.json").is_file()
+
+
+# ---------------------------------------------------------------- denoiser options
+
+
+def test_residual_denoiser_is_identity_at_initialisation():
+    from stability.denoisers import ResidualGCNDenoiser
+
+    torch.manual_seed(0)
+    network = ResidualGCNDenoiser(dim=4, hidden_dim=8, layers=2)
+    x = torch.randn(5, 4)
+    edge_index = torch.tensor([[0, 1, 2], [1, 2, 3]])
+    assert torch.equal(network(x, edge_index, torch.full((5,), 0.1)), x)
+
+
+def test_default_denoiser_options_reproduce_upstream_architecture(graph):
+    from models.direction_diffusion import gcndec
+    from stability.model_training import build_model_args
+
+    config = tiny_config()
+    args, _ = build_model_args(graph, config, torch.device("cpu"))
+    from stability.hypdiff_models import StabilityDiffusion
+
+    denoiser = StabilityDiffusion(args, dim=args.dim, device="cpu")
+    assert isinstance(denoiser.gcn, gcndec) and denoiser.clip_x0 is True
+    residual = tiny_config(denoiser={"architecture": "residual_gcn", "clip_x0": False})
+    args, _ = build_model_args(graph, residual, torch.device("cpu"))
+    denoiser = StabilityDiffusion(args, dim=args.dim, device="cpu")
+    assert type(denoiser.gcn).__name__ == "ResidualGCNDenoiser" and denoiser.clip_x0 is False
+
+
+@pytest.mark.parametrize("training", ["generative", "damage_aware"])
+def test_denoiser_training_does_not_read_pool_edges(graph, monkeypatch, training):
+    from dataclasses import replace
+
+    from stability.edge_split import EdgeSplit
+
+    config = tiny_config(denoiser={"training": training, "architecture": "residual_gcn"})
+    split = split_edges(graph.edges, graph.node_count, 0.5, 0.1, 0.4, 40, seed=3)
+    forbidden = split.forbidden_negative_keys()
+    first = train_models(graph, split, config, torch.device("cpu"))
+    monkeypatch.setattr(EdgeSplit, "forbidden_negative_keys", lambda self: forbidden)
+    second = train_models(graph, replace(split, pool=split.pool[:0]), config, torch.device("cpu"))
+    for name, tensor in first.denoiser.state_dict().items():
+        assert torch.equal(tensor, second.denoiser.state_dict()[name]), name
+    if training == "damage_aware":
+        drops = first.history["denoiser_drop_fractions"]
+        assert len(drops) == config.denoiser.epochs
+        assert all(0.0 <= d < config.denoiser.train_max_drop for d in drops)
+
+
+def test_validation_recovery_uses_train_edges_only_and_calibrates_tau(graph, monkeypatch):
+    import stability.validation_recovery as validation_module
+
+    config = tiny_config()
+    split = split_edges(graph.edges, graph.node_count, 0.5, 0.1, 0.4, 40, seed=3)
+    models = train_models(graph, split, config, torch.device("cpu"))
+    seen = []
+    real = validation_module.normalized_adjacency
+
+    def spy(node_count, edges, device):
+        seen.append(np.asarray(edges).copy())
+        return real(node_count, edges, device)
+
+    monkeypatch.setattr(validation_module, "normalized_adjacency", spy)
+    result = validation_module.validation_recovery(graph, split, models, config, torch.device("cpu"))
+    assert len(seen) == 1 and np.array_equal(seen[0], split.train)
+    for method in ("diffusion", "no_diffusion", "clamp_only"):
+        summary = result[method]
+        assert 0.0 <= summary["auc_mean_probability"] <= 1.0
+        # calibrated so that the validation false-positive rate is about target_fpr
+        assert summary["false_positive_rate"] <= config.recovery.target_fpr + 1.0 / len(split.val_negatives)
+
+    fixed = tiny_config(recovery={"tau_mode": "fixed", "tau": 0.5})
+    result = validation_module.validation_recovery(graph, split, models, fixed, torch.device("cpu"))
+    assert result["diffusion"]["tau"] == 0.5 and result["no_diffusion"]["tau"] == 0.5
+
+
+def test_calibrate_tau_respects_target_with_ties():
+    from stability.validation_recovery import calibrate_tau
+
+    negatives = np.array([0.9] * 30 + [0.2] * 70)
+    tau = calibrate_tau(negatives, 0.05)
+    assert np.mean(negatives >= tau) <= 0.05
+    spread = np.linspace(0, 1, 1001)
+    tau = calibrate_tau(spread, 0.05)
+    assert np.mean(spread >= tau) == pytest.approx(0.05, abs=0.002)

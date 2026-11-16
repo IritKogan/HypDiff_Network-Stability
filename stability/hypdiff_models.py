@@ -18,6 +18,9 @@ here, as a subclass, so that the diff against upstream is explicit:
       (same result; upstream loops over nodes in Python).
     * ``draw_noise`` / ``_denoise_from_tstar`` / ``sample_from_tstar``  new
       project methods for partial-noise recovery from t* < T.
+    * ``denoiser_architecture`` ("upstream_gcn" | "residual_gcn"), ``clip_x0``
+      and ``restoration_loss`` (damage-aware training) — project options read
+      from ``args``; defaults reproduce the upstream behaviour.
 
     Upstream methods not used by the project (``p_sample``, ``p_sample_loop``,
     ``x_tran``) are inherited unchanged and still assume c = 1.
@@ -39,8 +42,10 @@ from layers.layers import FermiDiracDecoder
 from manifolds.poincare import PoincareBall
 from models.base_models import LPModel
 from models.direction_diffusion import diffusion, gcndec, get_alphas, mlp
+from stability.denoisers import ResidualGCNDenoiser
 
 NOISE_FORMULAS = ("exact", "upstream")
+DENOISER_ARCHITECTURES = ("upstream_gcn", "residual_gcn")
 FINAL_ACTIVATIONS = ("relu", "leaky_relu")
 
 
@@ -92,6 +97,15 @@ class StabilityDiffusion(diffusion):
         ):
             setattr(self, name, getattr(self, name).to(device))
         self.dc = FermiDiracDecoder(r=args.r, t=args.t)
+        # Project options (defaults = upstream behaviour).
+        self.clip_x0 = bool(getattr(args, "clip_x0", True))
+        self.architecture = getattr(args, "denoiser_architecture", "upstream_gcn")
+        if self.architecture not in DENOISER_ARCHITECTURES:
+            raise ValueError(f"denoiser_architecture must be one of {DENOISER_ARCHITECTURES}")
+        if self.architecture == "residual_gcn":
+            self.gcn = ResidualGCNDenoiser(
+                dim, int(args.denoiser_hidden_dim), int(args.denoiser_layers)
+            ).to(device)
 
     # -- documented copies of upstream methods (self.c / device fixes) ------
 
@@ -212,7 +226,9 @@ class StabilityDiffusion(diffusion):
             )
             # Network was trained on t / num_timesteps (see forward).
             normalized_t = batch_t.to(dtype=torch.float32) / self.num_timesteps
-            x0 = self.gcn(x_t, edge_index, normalized_t).clamp(-1.0, 1.0)
+            x0 = self.gcn(x_t, edge_index, normalized_t)
+            if self.clip_x0:  # upstream clip_denoised; x0 is standardised (std 1)
+                x0 = x0.clamp(-1.0, 1.0)
             if timestep == 0:
                 return x0
 
@@ -228,6 +244,43 @@ class StabilityDiffusion(diffusion):
                 restrict=False,
             )
         raise RuntimeError("reverse diffusion loop did not produce a clean endpoint")
+
+    def shrink_to_prototype(self, damaged_embeddings, labels, prototypes, clip=1.0):
+        """Ablation baseline (no network, no noise): the clamp step of the recovery
+        alone — standardised tangent coordinates at the community prototype are
+        clipped to [-clip, clip] and mapped back."""
+        labels = labels.to(device=damaged_embeddings.device, dtype=torch.long)
+        prototypes = prototypes.to(device=damaged_embeddings.device, dtype=damaged_embeddings.dtype)
+        node_prototypes = prototypes[labels]
+        tangent = self.manifold.logmap(node_prototypes, damaged_embeddings, c=self.c)
+        clipped = self.normalization(tangent).clamp(-clip, clip)
+        return self.manifold.expmap(self.renormal(clipped, tangent), node_prototypes, c=self.c)
+
+    def restoration_loss(self, clean_embeddings, damaged_embeddings, damaged_adjacency,
+                         labels, prototypes, t_max):
+        """Damage-aware training objective (project).
+
+        Input: embeddings of an edge-dropped training graph, noised to a random
+        t < t_max exactly as in sample_from_tstar. Target: the embeddings of the
+        intact training graph. Both are expressed in the tangent space of each
+        node's community prototype and standardised with the DAMAGED statistics,
+        the only ones available at recovery time (sample_from_tstar renormalises
+        with them), so the prediction lands directly on the clean embedding.
+        """
+        labels = labels.to(device=damaged_embeddings.device, dtype=torch.long)
+        prototypes = prototypes.to(device=damaged_embeddings.device, dtype=damaged_embeddings.dtype)
+        node_prototypes = prototypes[labels]
+        tangent_damaged = self.manifold.logmap(node_prototypes, damaged_embeddings, c=self.c)
+        tangent_clean = self.manifold.logmap(node_prototypes, clean_embeddings, c=self.c)
+        mean, std = torch.mean(tangent_damaged), torch.std(tangent_damaged)
+        x_damaged = (tangent_damaged - mean) / std
+        target = (tangent_clean - mean) / std
+        direction = torch.stack([self.manifold.logmap0(p, c=self.c) for p in prototypes])
+        t = torch.randint(0, t_max, (x_damaged.shape[0],), device=x_damaged.device).long()
+        noise = torch.randn_like(x_damaged)
+        x_t = self.q_sample(x_damaged, t, direction, noise, labels, None, restrict=True)
+        prediction = self.gcn(x_t, self.edge(damaged_adjacency.coalesce()), t / self.num_timesteps)
+        return F.mse_loss(prediction, target.to(torch.float32))
 
     def sample_from_tstar(
         self,

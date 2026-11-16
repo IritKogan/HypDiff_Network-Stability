@@ -88,6 +88,10 @@ def build_model_args(graph: GraphData, config: ExperimentConfig, device: torch.d
         hid1=8,
         hid2=4,
         final_activation=model.final_activation,
+        denoiser_architecture=config.denoiser.architecture,
+        denoiser_hidden_dim=config.denoiser.hidden_dim,
+        denoiser_layers=config.denoiser.layers,
+        clip_x0=config.denoiser.clip_x0,
     )
     pilot = PilotConfig(
         curvature=model.curvature,
@@ -108,14 +112,17 @@ def _validation_auc(encoder, embeddings, val_pos, val_neg) -> float:
     return float(roc_auc_score(labels, scores.detach().cpu().numpy()))
 
 
-def train_models(
+def train_encoder(
     graph: GraphData,
     split: EdgeSplit,
     config: ExperimentConfig,
     device: torch.device,
     audit: bool = False,
     log_every: int = 0,
-) -> TrainedModels:
+):
+    """Link-prediction training on train edges, early stopping on val AUC.
+
+    Returns (encoder, args, train_adjacency, history, audit_record)."""
     seed = config.model.seed
     random.seed(seed)
     np.random.seed(seed)
@@ -130,11 +137,12 @@ def train_models(
     val_pos = _edge_tensor(split.val, device)
     val_neg = _edge_tensor(split.val_negatives, device)
     forbidden = split.forbidden_negative_keys()
-    seen_negative_keys = [] if audit else None
+    seen_negative_keys = []
 
-    # ---- encoder: link prediction on train edges, early stopping on val AUC ----
     ae = config.autoencoder
-    optimizer = torch.optim.Adam(encoder.parameters(), lr=ae.learning_rate)
+    optimizer = torch.optim.Adam(
+        encoder.parameters(), lr=ae.learning_rate, weight_decay=ae.weight_decay
+    )
     train_loss, val_auc = [], []
     best_auc, best_epoch, best_state = -np.inf, -1, None
     for epoch in range(ae.max_epochs):
@@ -167,55 +175,6 @@ def train_models(
             break
     encoder.load_state_dict(best_state)
     encoder.eval()
-
-    # ---- community context on the TRAIN graph ----
-    np.random.seed(config.community.seed)
-    clusterer = HyperbolicKMeans(
-        n_clusters=config.community.n_clusters, curvature=config.model.curvature
-    )
-    context = compute_community_context(
-        encoder,
-        features,
-        train_adjacency,
-        clusterer,
-        tuple(range(graph.node_count)),
-        max_epochs=config.community.max_epochs,
-    )
-    with torch.no_grad():
-        train_embeddings = encoder.encode(features, train_adjacency)[2].detach()
-
-    # ---- denoiser on train-graph embeddings ----
-    torch.manual_seed(seed + DENOISER_SEED_OFFSET)
-    denoiser = StabilityDiffusion(
-        args, dim=args.dim, curvature=config.model.curvature, device=device
-    ).to(device)
-    den = config.denoiser
-    optimizer = torch.optim.Adam(denoiser.parameters(), lr=den.learning_rate)
-    denoiser_loss = []
-    for epoch in range(den.epochs):
-        denoiser.train()
-        optimizer.zero_grad()
-        loss = denoiser(
-            train_embeddings.clone(),
-            train_adjacency,
-            context.labels,
-            context.centers,
-            restrict=True,
-            graphset=False,
-        )
-        if not torch.isfinite(loss):
-            raise RuntimeError(f"non-finite denoiser loss at epoch {epoch}")
-        loss.backward()
-        optimizer.step()
-        denoiser_loss.append(float(loss.detach()))
-        if log_every and epoch % log_every == 0:
-            print(f"[denoiser] epoch {epoch} loss {denoiser_loss[-1]:.4f}", flush=True)
-    denoiser.eval()
-    for model in (encoder, denoiser):
-        for parameter in model.parameters():
-            parameter.requires_grad_(False)
-
-    labels = context.labels.cpu().numpy()
     history = {
         "autoencoder_train_loss": train_loss,
         "autoencoder_val_auc": val_auc,
@@ -223,13 +182,6 @@ def train_models(
         "autoencoder_best_val_auc": best_auc,
         "autoencoder_epochs_run": len(train_loss),
         "autoencoder_early_stopped": len(train_loss) < ae.max_epochs,
-        "denoiser_loss": denoiser_loss,
-        "community_cluster_sizes": np.bincount(labels, minlength=config.community.n_clusters).tolist(),
-        "community_nmi_vs_classes": (
-            float(normalized_mutual_info_score(graph.class_labels, labels))
-            if graph.class_labels is not None
-            else None
-        ),
     }
     audit_record = {}
     if audit:
@@ -244,4 +196,101 @@ def train_models(
                 pair_keys(index[:, off_diagonal].T, graph.node_count)
             ),
         }
+    return encoder, args, train_adjacency, history, audit_record
+
+
+def build_context(graph, config, encoder, train_adjacency, device) -> CommunityContext:
+    """Hyperbolic K-means on train-graph embeddings (train edges only)."""
+    np.random.seed(config.community.seed)
+    clusterer = HyperbolicKMeans(
+        n_clusters=config.community.n_clusters, curvature=config.model.curvature
+    )
+    return compute_community_context(
+        encoder,
+        graph.features.to(device),
+        train_adjacency,
+        clusterer,
+        tuple(range(graph.node_count)),
+        max_epochs=config.community.max_epochs,
+    )
+
+
+def train_denoiser(graph, split, config, device, encoder, args, train_adjacency, context,
+                   log_every: int = 0):
+    """Train the denoiser on the TRAIN graph only.
+
+    generative   : upstream objective (noised clean embeddings -> clean).
+    damage_aware : edge-dropped train graph (+ noise) -> intact train graph.
+    """
+    seed = config.model.seed
+    den = config.denoiser
+    features = graph.features.to(device)
+    with torch.no_grad():
+        train_embeddings = encoder.encode(features, train_adjacency)[2].detach()
+    torch.manual_seed(seed + DENOISER_SEED_OFFSET)
+    denoiser = StabilityDiffusion(
+        args, dim=args.dim, curvature=config.model.curvature, device=device
+    ).to(device)
+    optimizer = torch.optim.Adam(denoiser.parameters(), lr=den.learning_rate)
+    drop_rng = np.random.default_rng([seed, 2])
+    losses, drops = [], []
+    for epoch in range(den.epochs):
+        denoiser.train()
+        optimizer.zero_grad()
+        if den.training == "generative":
+            loss = denoiser(
+                train_embeddings.clone(), train_adjacency, context.labels, context.centers,
+                restrict=True, graphset=False,
+            )
+        else:
+            fraction = float(drop_rng.uniform(0.0, den.train_max_drop))
+            keep = drop_rng.random(len(split.train)) >= fraction
+            damaged_adjacency = normalized_adjacency(graph.node_count, split.train[keep], device)
+            with torch.no_grad():
+                damaged_embeddings = encoder.encode(features, damaged_adjacency)[2].detach()
+            loss = denoiser.restoration_loss(
+                train_embeddings, damaged_embeddings, damaged_adjacency,
+                context.labels, context.centers, den.train_t_max,
+            )
+            drops.append(fraction)
+        if not torch.isfinite(loss):
+            raise RuntimeError(f"non-finite denoiser loss at epoch {epoch}")
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.detach()))
+        if log_every and epoch % log_every == 0:
+            print(f"[denoiser] epoch {epoch} loss {losses[-1]:.4f}", flush=True)
+    denoiser.eval()
+    for parameter in denoiser.parameters():
+        parameter.requires_grad_(False)
+    return denoiser, {"denoiser_loss": losses, "denoiser_drop_fractions": drops}
+
+
+def train_models(
+    graph: GraphData,
+    split: EdgeSplit,
+    config: ExperimentConfig,
+    device: torch.device,
+    audit: bool = False,
+    log_every: int = 0,
+) -> TrainedModels:
+    encoder, args, train_adjacency, history, audit_record = train_encoder(
+        graph, split, config, device, audit=audit, log_every=log_every
+    )
+    context = build_context(graph, config, encoder, train_adjacency, device)
+    denoiser, denoiser_history = train_denoiser(
+        graph, split, config, device, encoder, args, train_adjacency, context, log_every
+    )
+    for parameter in encoder.parameters():
+        parameter.requires_grad_(False)
+    labels = context.labels.cpu().numpy()
+    history.update(denoiser_history)
+    history.update({
+        "community_cluster_sizes": np.bincount(labels, minlength=config.community.n_clusters).tolist(),
+        "community_nmi_vs_classes": (
+            float(normalized_mutual_info_score(graph.class_labels, labels))
+            if graph.class_labels is not None
+            else None
+        ),
+    })
     return TrainedModels(encoder, denoiser, context, train_adjacency, history, audit_record)

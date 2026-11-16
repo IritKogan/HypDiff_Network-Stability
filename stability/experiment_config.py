@@ -16,6 +16,9 @@ ATTACKS = ("random", "targeted_weighted", "targeted_deterministic")
 DEVICES = ("auto", "cpu", "cuda")
 NOISE_FORMULAS = ("exact", "upstream")
 FINAL_ACTIVATIONS = ("relu", "leaky_relu")
+DENOISER_ARCHITECTURES = ("upstream_gcn", "residual_gcn")
+DENOISER_TRAINING = ("generative", "damage_aware")
+TAU_MODES = ("fixed", "val_fpr")
 DIFFUSION_STEPS = 200  # upstream HypDiff num_timesteps (hard-coded upstream)
 
 
@@ -62,6 +65,7 @@ class AutoencoderConfig:
     max_epochs: int
     patience: int
     learning_rate: float
+    weight_decay: float
     negatives_per_positive: int
 
 
@@ -70,6 +74,13 @@ class DenoiserConfig:
     epochs: int
     learning_rate: float
     noise_formula: str
+    architecture: str
+    hidden_dim: int
+    layers: int
+    training: str
+    train_max_drop: float
+    train_t_max: int
+    clip_x0: bool
 
 
 @dataclass(frozen=True)
@@ -91,7 +102,9 @@ class PerturbationConfig:
 class RecoveryConfig:
     seed: int
     t_star: int
+    tau_mode: str
     tau: float
+    target_fpr: float
     reconstructions: int
 
 
@@ -216,11 +229,17 @@ def _validate(config: ExperimentConfig) -> None:
     ae = config.autoencoder
     _require(ae.max_epochs > 0 and ae.patience > 0, "autoencoder epochs/patience must be positive")
     _require(ae.learning_rate > 0, "autoencoder.learning_rate must be positive")
+    _require(ae.weight_decay >= 0, "autoencoder.weight_decay must be non-negative")
     _require(ae.negatives_per_positive > 0, "autoencoder.negatives_per_positive must be positive")
 
     den = config.denoiser
     _require(den.epochs > 0 and den.learning_rate > 0, "denoiser epochs/learning_rate must be positive")
     _require(den.noise_formula in NOISE_FORMULAS, f"denoiser.noise_formula in {NOISE_FORMULAS}")
+    _require(den.architecture in DENOISER_ARCHITECTURES, f"denoiser.architecture in {DENOISER_ARCHITECTURES}")
+    _require(den.training in DENOISER_TRAINING, f"denoiser.training in {DENOISER_TRAINING}")
+    _require(den.hidden_dim > 0 and den.layers > 0, "denoiser.hidden_dim and layers must be positive")
+    _require(0.0 <= den.train_max_drop < 1.0, "denoiser.train_max_drop must be in [0, 1)")
+    _require(0 < den.train_t_max <= DIFFUSION_STEPS, f"denoiser.train_t_max must be in (0, {DIFFUSION_STEPS}]")
 
     com = config.community
     _require(com.n_clusters >= 2 and com.max_epochs > 0, "community.n_clusters >= 2, max_epochs > 0")
@@ -249,4 +268,6 @@ def _validate(config: ExperimentConfig) -> None:
     rec = config.recovery
     _require(0 <= rec.t_star < DIFFUSION_STEPS, f"recovery.t_star must be in [0, {DIFFUSION_STEPS - 1}]")
     _require(0.0 <= rec.tau <= 1.0, "recovery.tau must be in [0, 1]")
+    _require(rec.tau_mode in TAU_MODES, f"recovery.tau_mode in {TAU_MODES}")
+    _require(0.0 < rec.target_fpr < 1.0, "recovery.target_fpr must be in (0, 1)")
     _require(rec.reconstructions > 0, "recovery.reconstructions must be positive")

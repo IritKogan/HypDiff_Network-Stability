@@ -24,12 +24,12 @@ control_pairs = 20000
 
 [model]
 seed = 20261117
-dim = 16
+dim = 128                        # encoder sweep 2026-11-16 (val AUC only), see docs/model-selection-cora.md
 num_layers = 2
 curvature = 1.0
 final_activation = "relu"        # "relu" | "leaky_relu"
 activation = "relu"              # hidden HGCN activation (torch.nn.functional name)
-dropout = 0.0
+dropout = 0.7
 bias = false
 use_attention = false
 fermi_dirac_r = 2.0
@@ -39,12 +39,21 @@ fermi_dirac_t = 1.0
 max_epochs = 2000
 patience = 200                   # early stopping on validation AUC
 learning_rate = 0.01
+weight_decay = 0.0005
 negatives_per_positive = 1       # resampled every epoch
 
 [denoiser]
 epochs = 5000
 learning_rate = 0.001
 noise_formula = "exact"          # "exact" | "upstream"  (Decision 5)
+architecture = "upstream_gcn"    # "upstream_gcn" (HypDiff gcndec) | "residual_gcn" (x0 = x_t + correction)
+hidden_dim = 128                 # residual_gcn only
+layers = 3                       # residual_gcn only
+training = "generative"          # "generative" (upstream: denoise noised clean embeddings)
+                                 # | "damage_aware" (input: edge-dropped train graph, target: intact train graph)
+train_max_drop = 0.4             # damage_aware: per-epoch drop fraction ~ U(0, train_max_drop) of TRAIN edges
+train_t_max = 200                # timesteps sampled in [0, train_t_max) during training (200 = upstream)
+clip_x0 = true                   # upstream clamps predicted x0 to [-1, 1]
 
 [community]
 n_clusters = 7                   # hyperbolic K-means on train-graph embeddings
@@ -65,5 +74,7 @@ attacks = ["random", "targeted_weighted", "targeted_deterministic"]
 [recovery]
 seed = 20261120
 t_star = 7
-tau = 0.5
+tau_mode = "val_fpr"             # "fixed" (use tau) | "val_fpr" (per method, calibrated on validation)
+tau = 0.5                        # used when tau_mode = "fixed"
+target_fpr = 0.05                # val_fpr: false-positive rate on validation negatives
 reconstructions = 10             # K per damaged graph

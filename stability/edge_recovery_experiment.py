@@ -24,6 +24,7 @@ import time
 from typing import Any
 
 import numpy as np
+from sklearn.metrics import roc_auc_score
 import torch
 
 from stability.edge_recovery_distribution import (
@@ -42,6 +43,7 @@ from stability.model_training import (
     train_models,
 )
 from stability.perturbation_masks import DamageSeries, make_damage_series
+from stability.validation_recovery import validation_recovery
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -93,13 +95,14 @@ def _write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
 
-def _decode_hits(encoder, embeddings, pairs: torch.Tensor, tau: float) -> np.ndarray:
+def _decode(encoder, embeddings, pairs: torch.Tensor) -> np.ndarray:
     if pairs.shape[0] == 0:
-        return np.zeros(0, dtype=bool)
+        return np.zeros(0, dtype=np.float64)
     probabilities = encoder.decode(embeddings, pairs)
     if not torch.isfinite(probabilities).all():
         raise RuntimeError("decoder produced non-finite probabilities")
-    return (probabilities >= tau).cpu().numpy()
+    # float64 so that comparisons with the calibrated tau are exact (see validation_recovery).
+    return probabilities.cpu().numpy().astype(np.float64)
 
 
 def run_recoveries(
@@ -109,8 +112,10 @@ def run_recoveries(
     models: TrainedModels,
     config: ExperimentConfig,
     device: torch.device,
+    taus: dict[str, float],
     log: bool = False,
 ) -> dict[str, dict[str, np.ndarray]]:
+    """taus: {"diffusion", "no_diffusion", "clamp_only"} -> per-method thresholds."""
     rec = config.recovery
     levels = len(config.perturbation.damage_fractions)
     features = graph.features.to(device)
@@ -121,11 +126,20 @@ def run_recoveries(
     results = {}
     for attack, items in series.items():
         shape = (levels, len(items), len(split.pool))
+        control_shape = (levels, len(items), len(split.control_pairs))
         removed = np.zeros(shape, dtype=bool)
         recovered = np.zeros(shape, dtype=np.int16)
+        recovered_probability = np.zeros(shape, dtype=np.float32)    # sum over K
         no_diffusion = np.zeros(shape, dtype=bool)
-        control_hits = np.zeros((levels, len(items), len(split.control_pairs)), dtype=np.int16)
-        control_no_diffusion = np.zeros(control_hits.shape, dtype=bool)
+        no_diffusion_probability = np.zeros(shape, dtype=np.float32)
+        control_hits = np.zeros(control_shape, dtype=np.int16)
+        control_probability_sum = np.zeros(control_shape, dtype=np.float32)
+        control_no_diffusion = np.zeros(control_shape, dtype=bool)
+        control_no_diffusion_probability = np.zeros(control_shape, dtype=np.float32)
+        clamp_only = np.zeros(shape, dtype=bool)
+        clamp_only_probability = np.zeros(shape, dtype=np.float32)
+        control_clamp_only = np.zeros(control_shape, dtype=bool)
+        control_clamp_only_probability = np.zeros(control_shape, dtype=np.float32)
         for item in items:
             s = item.series_index
             started = time.time()
@@ -138,12 +152,19 @@ def run_recoveries(
                 removed_pairs = torch.as_tensor(split.pool[pool_index], device=device)
                 with torch.no_grad():
                     embeddings = models.encoder.encode(features, adjacency)[2]
-                    no_diffusion[level, s, pool_index] = _decode_hits(
-                        models.encoder, embeddings, removed_pairs, rec.tau
-                    )
-                    control_no_diffusion[level, s] = _decode_hits(
-                        models.encoder, embeddings, control, rec.tau
-                    )
+                    p_removed = _decode(models.encoder, embeddings, removed_pairs)
+                    p_control = _decode(models.encoder, embeddings, control)
+                    no_diffusion_probability[level, s, pool_index] = p_removed
+                    no_diffusion[level, s, pool_index] = p_removed >= taus["no_diffusion"]
+                    control_no_diffusion_probability[level, s] = p_control
+                    control_no_diffusion[level, s] = p_control >= taus["no_diffusion"]
+                    shrunk = models.denoiser.shrink_to_prototype(embeddings, labels, centers)
+                    p_removed = _decode(models.encoder, shrunk, removed_pairs)
+                    p_control = _decode(models.encoder, shrunk, control)
+                    clamp_only_probability[level, s, pool_index] = p_removed
+                    clamp_only[level, s, pool_index] = p_removed >= taus["clamp_only"]
+                    control_clamp_only_probability[level, s] = p_control
+                    control_clamp_only[level, s] = p_control >= taus["clamp_only"]
                     for k in range(rec.reconstructions):
                         generator = torch.Generator(device=device)
                         generator.manual_seed(recovery_seed(rec.seed, s, k))
@@ -155,12 +176,12 @@ def run_recoveries(
                             t_star=rec.t_star,
                             generator=generator,
                         )
-                        recovered[level, s, pool_index] += _decode_hits(
-                            models.encoder, recovered_embeddings, removed_pairs, rec.tau
-                        )
-                        control_hits[level, s] += _decode_hits(
-                            models.encoder, recovered_embeddings, control, rec.tau
-                        )
+                        p_removed = _decode(models.encoder, recovered_embeddings, removed_pairs)
+                        p_control = _decode(models.encoder, recovered_embeddings, control)
+                        recovered[level, s, pool_index] += p_removed >= taus["diffusion"]
+                        recovered_probability[level, s, pool_index] += p_removed
+                        control_hits[level, s] += p_control >= taus["diffusion"]
+                        control_probability_sum[level, s] += p_control
                 removed[level, s, pool_index] = True
             if log:
                 print(f"[recovery] {attack} series {s + 1}/{len(items)} "
@@ -168,11 +189,27 @@ def run_recoveries(
         results[attack] = {
             "removed": removed,
             "recovered": recovered,
+            "recovered_probability_sum": recovered_probability,
             "no_diffusion": no_diffusion,
+            "no_diffusion_probability": no_diffusion_probability,
             "control_hits": control_hits,
+            "control_probability_sum": control_probability_sum,
             "control_no_diffusion": control_no_diffusion,
+            "control_no_diffusion_probability": control_no_diffusion_probability,
+            "clamp_only": clamp_only,
+            "clamp_only_probability": clamp_only_probability,
+            "control_clamp_only": control_clamp_only,
+            "control_clamp_only_probability": control_clamp_only_probability,
         }
     return results
+
+
+def _auc(positive: np.ndarray, negative: np.ndarray) -> float | None:
+    positive = positive[np.isfinite(positive)]
+    if positive.size == 0 or negative.size == 0:
+        return None
+    labels = np.r_[np.ones(positive.size), np.zeros(negative.size)]
+    return float(roc_auc_score(labels, np.r_[positive, negative]))
 
 
 def summarize(
@@ -199,6 +236,19 @@ def summarize(
             p_no_diffusion = np.where(n_e > 0, arrays["no_diffusion"].sum(axis=1) / n_e, np.nan)
         p_control = control_probability(arrays["control_hits"], K)
         p_control_no_diffusion = arrays["control_no_diffusion"].mean(axis=1)
+        series_count = arrays["removed"].shape[1]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            score_e = np.where(n_e > 0, arrays["recovered_probability_sum"].sum(axis=1) / (n_e * K), np.nan)
+            score_e_no_diffusion = np.where(
+                n_e > 0, arrays["no_diffusion_probability"].sum(axis=1) / n_e, np.nan
+            )
+        score_control = arrays["control_probability_sum"].sum(axis=1) / (series_count * K)
+        score_control_no_diffusion = arrays["control_no_diffusion_probability"].mean(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            p_clamp = np.where(n_e > 0, arrays["clamp_only"].sum(axis=1) / n_e, np.nan)
+            score_e_clamp = np.where(n_e > 0, arrays["clamp_only_probability"].sum(axis=1) / n_e, np.nan)
+        p_control_clamp = arrays["control_clamp_only"].mean(axis=1)
+        score_control_clamp = arrays["control_clamp_only_probability"].mean(axis=1)
         attack_summary = []
         for level, fraction in enumerate(fractions):
             evaluated = n_e[level] > 0
@@ -212,6 +262,13 @@ def summarize(
                 "p_e_no_diffusion": describe(p_no_diffusion[level]),
                 "control_false_positive": describe(p_control[level]),
                 "control_false_positive_no_diffusion": describe(p_control_no_diffusion[level]),
+                "auc_removed_vs_control": _auc(score_e[level], score_control[level]),
+                "auc_removed_vs_control_no_diffusion": _auc(
+                    score_e_no_diffusion[level], score_control_no_diffusion[level]
+                ),
+                "auc_removed_vs_control_clamp_only": _auc(score_e_clamp[level], score_control_clamp[level]),
+                "p_e_clamp_only": describe(p_clamp[level]),
+                "control_false_positive_clamp_only": describe(p_control_clamp[level]),
                 "p_e_vs_control": distance(p_e[level], p_control[level]),
                 "p_e_vs_no_diffusion": distance(p_e[level], p_no_diffusion[level]),
             }
@@ -237,6 +294,8 @@ def summarize(
                     "r_e": int(r_e[level, index]),
                     "p_e": float(p_e[level, index]),
                     "p_no_diffusion": float(p_no_diffusion[level, index]),
+                    "mean_probability": float(score_e[level, index]),
+                    "mean_probability_no_diffusion": float(score_e_no_diffusion[level, index]),
                 })
             for index, (source, target) in enumerate(split.control_pairs):
                 control_rows.append({
@@ -396,7 +455,12 @@ def run_experiment(
     )
     _write_json(output_dir / "training_history.json", models.history)
 
-    results = run_recoveries(graph, split, series, models, config, device, log=bool(log_every))
+    validation = validation_recovery(graph, split, models, config, device)
+    _write_json(output_dir / "validation_recovery.json", validation)
+    taus = {method: validation[method]["tau"] for method in ("diffusion", "no_diffusion", "clamp_only")}
+    if log_every:
+        print(f"[validation] {json.dumps(validation)}", flush=True)
+    results = run_recoveries(graph, split, series, models, config, device, taus, log=bool(log_every))
     np.savez_compressed(
         output_dir / "recovery_counts.npz",
         **{f"{attack}__{name}": array for attack, arrays in results.items() for name, array in arrays.items()},
@@ -416,10 +480,14 @@ def run_experiment(
         },
         "training": {
             key: value for key, value in models.history.items()
-            if key not in {"autoencoder_train_loss", "autoencoder_val_auc", "denoiser_loss"}
+            if key not in {"autoencoder_train_loss", "autoencoder_val_auc", "denoiser_loss",
+                           "denoiser_drop_fractions"}
         },
+        "thresholds": taus,
+        "validation_recovery": validation,
         "notes": [
             "p_e = r_e / (n_e * K) over independent cumulative series (Decision 1, 6).",
+            "Thresholds per method from validation (tau_mode); AUC uses mean probabilities (threshold-free).",
             "Levels are nested within a series: between-level distances are descriptive only.",
             "Recovery noise seeds are shared across attacks and levels (common random numbers).",
         ],

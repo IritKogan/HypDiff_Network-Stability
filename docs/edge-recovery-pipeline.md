@@ -27,12 +27,21 @@ Entry point: `python scripts/run_experiment.py --config configs/cora.toml`
    with threshold tau. A no-diffusion baseline (decode the damaged embeddings
    directly) is recorded for the same pairs. Noise seeds depend only on
    (series, k), so they are shared across attacks and levels.
+4b. **Validation recovery and thresholds** (`stability/validation_recovery.py`):
+   input graph = train edges only; validation edges vs validation negatives.
+   Per method (`diffusion`, `no_diffusion`, `clamp_only`) the threshold tau is
+   calibrated so that the false-positive rate on validation negatives equals
+   `recovery.target_fpr` (`tau_mode = "val_fpr"`), so methods are compared at the
+   same false-positive rate. Used also for model selection
+   (`scripts/sweep_encoder.py`, `scripts/sweep_denoiser.py`,
+   docs/model-selection-cora.md). Pool and control pairs are never involved.
 5. **Scoring** (`stability/edge_recovery_distribution.py`):
    n_e = #series in which e was removed, r_e = #reconstructions in which it
    reappeared, p_e = r_e / (n_e·K). Control pairs: p_c = hits / (N·K).
    Reported per attack and level: distribution summaries, histograms,
    same-class vs different-class edges (Cora labels used only here), KS /
-   Wasserstein distances to the control group, to the no-diffusion baseline
+   Wasserstein distances to the control group, threshold-free AUC (mean
+   probability, removed edges vs control pairs) for all three methods, to the no-diffusion baseline
    and between attacks. Levels are nested within a series, so between-level
    comparisons are descriptive only.
 
