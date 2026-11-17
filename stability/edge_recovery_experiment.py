@@ -43,7 +43,11 @@ from stability.model_training import (
     train_models,
 )
 from stability.perturbation_masks import DamageSeries, make_damage_series
+from stability.probability_calibration import PlattCalibrator
 from stability.validation_recovery import validation_recovery
+
+METHOD_CODES = {"diffusion": 0, "no_diffusion": 1, "clamp_only": 2}
+BERNOULLI_STREAM = 10  # SeedSequence tag separating edge draws from recovery noise
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -114,9 +118,37 @@ def run_recoveries(
     device: torch.device,
     taus: dict[str, float],
     log: bool = False,
+    calibrators: dict[str, PlattCalibrator] | None = None,
 ) -> dict[str, dict[str, np.ndarray]]:
-    """taus: {"diffusion", "no_diffusion", "clamp_only"} -> per-method thresholds."""
+    """taus: {"diffusion", "no_diffusion", "clamp_only"} -> per-method thresholds.
+
+    edge_decision "threshold": a pair is present in a reconstruction if p >= tau.
+    edge_decision "bernoulli" (Decision 10): present with probability q = calibrated p,
+    prior-shifted to the damaged graph's base rate (removed edges among its non-edges).
+    Uniforms come from SeedSequence([seed, BERNOULLI_STREAM, method, series, level, k]) over
+    ALL pool / control pairs, so draws are shared across attacks (common random numbers).
+    Deterministic methods (no_diffusion, clamp_only) then also get K draws per damaged graph.
+    """
     rec = config.recovery
+    bernoulli = rec.edge_decision == "bernoulli"
+    if bernoulli and not calibrators:
+        raise ValueError("edge_decision 'bernoulli' needs calibrators from validation_recovery")
+    draws = rec.reconstructions if bernoulli else 1
+    n = graph.node_count
+    non_edges = n * (n - 1) // 2 - len(split.all_edges)
+
+    def decide(method, p_removed, p_control, pool_index, s, level, k):
+        if not bernoulli:
+            return p_removed >= taus[method], p_control >= taus[method], None, None
+        prevalence = len(pool_index) / (len(pool_index) + non_edges)
+        q_removed = calibrators[method].apply(p_removed, prevalence)
+        q_control = calibrators[method].apply(p_control, prevalence)
+        rng = np.random.default_rng(np.random.SeedSequence(
+            [rec.seed, BERNOULLI_STREAM, METHOD_CODES[method], s, level, k]))
+        u_pool = rng.random(len(split.pool))
+        u_control = rng.random(len(split.control_pairs))
+        return u_pool[pool_index] < q_removed, u_control < q_control, q_removed, q_control
+
     levels = len(config.perturbation.damage_fractions)
     features = graph.features.to(device)
     labels = models.context.labels.to(device)
@@ -130,15 +162,18 @@ def run_recoveries(
         removed = np.zeros(shape, dtype=bool)
         recovered = np.zeros(shape, dtype=np.int16)
         recovered_probability = np.zeros(shape, dtype=np.float32)    # sum over K
-        no_diffusion = np.zeros(shape, dtype=bool)
+        no_diffusion = np.zeros(shape, dtype=np.int16)
         no_diffusion_probability = np.zeros(shape, dtype=np.float32)
         control_hits = np.zeros(control_shape, dtype=np.int16)
         control_probability_sum = np.zeros(control_shape, dtype=np.float32)
-        control_no_diffusion = np.zeros(control_shape, dtype=bool)
+        control_no_diffusion = np.zeros(control_shape, dtype=np.int16)
         control_no_diffusion_probability = np.zeros(control_shape, dtype=np.float32)
-        clamp_only = np.zeros(shape, dtype=bool)
+        clamp_only = np.zeros(shape, dtype=np.int16)
         clamp_only_probability = np.zeros(shape, dtype=np.float32)
-        control_clamp_only = np.zeros(control_shape, dtype=bool)
+        control_clamp_only = np.zeros(control_shape, dtype=np.int16)
+        # Decision 10: sums of calibrated probabilities (expected frequency, no draw noise)
+        calibrated = {m: np.zeros(shape, dtype=np.float32) for m in METHOD_CODES}
+        control_calibrated = {m: np.zeros(control_shape, dtype=np.float32) for m in METHOD_CODES}
         control_clamp_only_probability = np.zeros(control_shape, dtype=np.float32)
         for item in items:
             s = item.series_index
@@ -155,16 +190,28 @@ def run_recoveries(
                     p_removed = _decode(models.encoder, embeddings, removed_pairs)
                     p_control = _decode(models.encoder, embeddings, control)
                     no_diffusion_probability[level, s, pool_index] = p_removed
-                    no_diffusion[level, s, pool_index] = p_removed >= taus["no_diffusion"]
                     control_no_diffusion_probability[level, s] = p_control
-                    control_no_diffusion[level, s] = p_control >= taus["no_diffusion"]
+                    for k in range(draws):
+                        hit, control_hit, q_r, q_c = decide("no_diffusion", p_removed, p_control,
+                                                            pool_index, s, level, k)
+                        no_diffusion[level, s, pool_index] += hit
+                        control_no_diffusion[level, s] += control_hit
+                    if bernoulli:
+                        calibrated["no_diffusion"][level, s, pool_index] = q_r * draws
+                        control_calibrated["no_diffusion"][level, s] = q_c * draws
                     shrunk = models.denoiser.shrink_to_prototype(embeddings, labels, centers)
                     p_removed = _decode(models.encoder, shrunk, removed_pairs)
                     p_control = _decode(models.encoder, shrunk, control)
                     clamp_only_probability[level, s, pool_index] = p_removed
-                    clamp_only[level, s, pool_index] = p_removed >= taus["clamp_only"]
                     control_clamp_only_probability[level, s] = p_control
-                    control_clamp_only[level, s] = p_control >= taus["clamp_only"]
+                    for k in range(draws):
+                        hit, control_hit, q_r, q_c = decide("clamp_only", p_removed, p_control,
+                                                            pool_index, s, level, k)
+                        clamp_only[level, s, pool_index] += hit
+                        control_clamp_only[level, s] += control_hit
+                    if bernoulli:
+                        calibrated["clamp_only"][level, s, pool_index] = q_r * draws
+                        control_calibrated["clamp_only"][level, s] = q_c * draws
                     for k in range(rec.reconstructions):
                         generator = torch.Generator(device=device)
                         generator.manual_seed(recovery_seed(rec.seed, s, k))
@@ -178,10 +225,15 @@ def run_recoveries(
                         )
                         p_removed = _decode(models.encoder, recovered_embeddings, removed_pairs)
                         p_control = _decode(models.encoder, recovered_embeddings, control)
-                        recovered[level, s, pool_index] += p_removed >= taus["diffusion"]
+                        hit, control_hit, q_r, q_c = decide("diffusion", p_removed, p_control,
+                                                            pool_index, s, level, k)
+                        recovered[level, s, pool_index] += hit
                         recovered_probability[level, s, pool_index] += p_removed
-                        control_hits[level, s] += p_control >= taus["diffusion"]
+                        control_hits[level, s] += control_hit
                         control_probability_sum[level, s] += p_control
+                        if bernoulli:
+                            calibrated["diffusion"][level, s, pool_index] += q_r
+                            control_calibrated["diffusion"][level, s] += q_c
                 removed[level, s, pool_index] = True
             if log:
                 print(f"[recovery] {attack} series {s + 1}/{len(items)} "
@@ -200,6 +252,9 @@ def run_recoveries(
             "clamp_only_probability": clamp_only_probability,
             "control_clamp_only": control_clamp_only,
             "control_clamp_only_probability": control_clamp_only_probability,
+            "deterministic_draws": np.asarray(draws),
+            **{f"{m}_calibrated_sum": calibrated[m] for m in METHOD_CODES},
+            **{f"control_{m}_calibrated_sum": control_calibrated[m] for m in METHOD_CODES},
         }
     return results
 
@@ -232,10 +287,15 @@ def summarize(
     edge_rows, control_rows = [], []
     for attack, arrays in results.items():
         n_e, r_e, p_e = per_edge_probability(arrays["removed"], arrays["recovered"], K)
+        draws = int(arrays.get("deterministic_draws", 1))   # K draws per damaged graph if bernoulli
         with np.errstate(invalid="ignore", divide="ignore"):
-            p_no_diffusion = np.where(n_e > 0, arrays["no_diffusion"].sum(axis=1) / n_e, np.nan)
+            p_no_diffusion = np.where(n_e > 0, arrays["no_diffusion"].sum(axis=1) / (n_e * draws), np.nan)
         p_control = control_probability(arrays["control_hits"], K)
-        p_control_no_diffusion = arrays["control_no_diffusion"].mean(axis=1)
+        p_control_no_diffusion = control_probability(arrays["control_no_diffusion"], draws)
+        bernoulli = config.recovery.edge_decision == "bernoulli"
+        with np.errstate(invalid="ignore", divide="ignore"):
+            expected_p_e = (np.where(n_e > 0, arrays["diffusion_calibrated_sum"].sum(axis=1) / (n_e * K), np.nan)
+                            if bernoulli else None)
         series_count = arrays["removed"].shape[1]
         with np.errstate(invalid="ignore", divide="ignore"):
             score_e = np.where(n_e > 0, arrays["recovered_probability_sum"].sum(axis=1) / (n_e * K), np.nan)
@@ -245,9 +305,9 @@ def summarize(
         score_control = arrays["control_probability_sum"].sum(axis=1) / (series_count * K)
         score_control_no_diffusion = arrays["control_no_diffusion_probability"].mean(axis=1)
         with np.errstate(invalid="ignore", divide="ignore"):
-            p_clamp = np.where(n_e > 0, arrays["clamp_only"].sum(axis=1) / n_e, np.nan)
+            p_clamp = np.where(n_e > 0, arrays["clamp_only"].sum(axis=1) / (n_e * draws), np.nan)
             score_e_clamp = np.where(n_e > 0, arrays["clamp_only_probability"].sum(axis=1) / n_e, np.nan)
-        p_control_clamp = arrays["control_clamp_only"].mean(axis=1)
+        p_control_clamp = control_probability(arrays["control_clamp_only"], draws)
         score_control_clamp = arrays["control_clamp_only_probability"].mean(axis=1)
         attack_summary = []
         for level, fraction in enumerate(fractions):
@@ -272,6 +332,8 @@ def summarize(
                 "p_e_vs_control": distance(p_e[level], p_control[level]),
                 "p_e_vs_no_diffusion": distance(p_e[level], p_no_diffusion[level]),
             }
+            if bernoulli:
+                entry["expected_p_e"] = describe(expected_p_e[level])
             if pool_same is not None:
                 entry["p_e_same_class"] = describe(p_e[level][pool_same])
                 entry["p_e_different_class"] = describe(p_e[level][~pool_same])
@@ -296,6 +358,7 @@ def summarize(
                     "p_no_diffusion": float(p_no_diffusion[level, index]),
                     "mean_probability": float(score_e[level, index]),
                     "mean_probability_no_diffusion": float(score_e_no_diffusion[level, index]),
+                    "expected_p_e": None if expected_p_e is None else float(expected_p_e[level, index]),
                 })
             for index, (source, target) in enumerate(split.control_pairs):
                 control_rows.append({
@@ -460,7 +523,10 @@ def run_experiment(
     taus = {method: validation[method]["tau"] for method in ("diffusion", "no_diffusion", "clamp_only")}
     if log_every:
         print(f"[validation] {json.dumps(validation)}", flush=True)
-    results = run_recoveries(graph, split, series, models, config, device, taus, log=bool(log_every))
+    calibrators = {method: PlattCalibrator(**validation[method]["calibration"]["calibrator"])
+                   for method in ("diffusion", "no_diffusion", "clamp_only")}
+    results = run_recoveries(graph, split, series, models, config, device, taus, log=bool(log_every),
+                             calibrators=calibrators)
     np.savez_compressed(
         output_dir / "recovery_counts.npz",
         **{f"{attack}__{name}": array for attack, arrays in results.items() for name, array in arrays.items()},
@@ -483,10 +549,14 @@ def run_experiment(
             if key not in {"autoencoder_train_loss", "autoencoder_val_auc", "denoiser_loss",
                            "denoiser_drop_fractions"}
         },
+        "edge_decision": config.recovery.edge_decision,
         "thresholds": taus,
+        "calibrators": {m: c.to_dict() for m, c in calibrators.items()},
         "validation_recovery": validation,
         "notes": [
             "p_e = r_e / (n_e * K) over independent cumulative series (Decision 1, 6).",
+            "edge_decision 'bernoulli' (Decision 10): each reconstruction draws each pair with the calibrated, "
+            "prior-shifted probability; expected_p_e = mean calibrated probability (no draw noise).",
             "Thresholds per method from validation (tau_mode); AUC uses mean probabilities (threshold-free).",
             "Levels are nested within a series: between-level distances are descriptive only.",
             "Recovery noise seeds are shared across attacks and levels (common random numbers).",

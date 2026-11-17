@@ -223,3 +223,50 @@ p_e = frequency over K reconstructions -> E_samples[P(A_ij = 1)], which is grade
 diffusion contributes a better base-rate calibration (non-edge probability 0.076 vs 0.18 / 0.28), but
 absolute calibration is still far off (true base rate ~0.001) and would need a leakage-free
 calibration step on validation. This changes the p_e definition (Decision 1) -> advisor decision.
+
+## 13. Decision 10 implemented: Bernoulli reconstructions + calibration (2026-11-17)
+
+Students' decision: a reconstruction draws each evaluated pair from a Bernoulli with the calibrated
+decoder probability (replaces the hard tau). Implemented:
+- stability/probability_calibration.py: weighted Platt scaling fitted on validation pairs only, weights
+  restoring the real base rate (validation edges stand for all edges missing from the validation input,
+  validation negatives for all non-edges), prior shift to the evaluation base rate (R removed edges among
+  the damaged graph's non-edges), cross-fitted log-loss / Brier / ECE.
+- recovery.edge_decision = "bernoulli" | "threshold"; validation_recovery fits a calibrator per method;
+  run_recoveries draws with SeedSequence([seed, 10, method, series, level, k]) over all pool / control
+  pairs (common random numbers across attacks); deterministic baselines also get K draws; expected_p_e =
+  mean calibrated probability (no draw noise) is reported too. Tests: tests/test_probability_calibration.py,
+  tests/test_bernoulli_reconstruction.py.
+
+Result (scripts/compare_calibrated_methods.py -> artifacts/sweeps/calibrated_methods.json; validation
+only; evaluation-like prevalence with 1056 removed edges = 0.00029):
+
+| method | AUC | cross-fitted log-loss | base-rate-only log-loss | median expected p_e (val edges) | 90th pct |
+|---|---|---|---|---|---|
+| no_diffusion | 0.825 | 0.00539 | 0.00593 | 0.0009 | 0.0017 |
+| clamp_only | 0.857 | 0.00523 | 0.00593 | 0.0013 | 0.0023 |
+| edge_reconstruction (Decision 8), t*=7 | 0.856 | 0.00517 | 0.00593 | 0.0014 | 0.0031 |
+| upstream generative, iterative t*=50 | 0.832 | 0.00535 | 0.00593 | 0.0011 | 0.0017 |
+| conditional residual, stochastic t*=30 | 0.857 | 0.00517 | 0.00593 | 0.0015 | 0.0031 |
+| conditional residual folded, t*=100 | 0.840 | 0.00527 | 0.00593 | 0.0012 | 0.0029 |
+| conditional gcn, t*=30 | 0.855 | 0.00521 | 0.00593 | 0.0014 | 0.0026 |
+| geometric + BCE, t*=60 | 0.832 | 0.00536 | 0.00593 | 0.0010 | 0.0018 |
+
+Findings:
+- Calibration works (ECE ~0), but at the real base rate a removed edge gets probability ~0.001-0.003:
+  5-10x the base rate, still tiny in absolute terms. With K = 10 and N = 20 almost every edge would get
+  p_e = 0 -> the Bernoulli p_e distribution is degenerate. (The earlier oral estimate of 0.05-0.2 was wrong.)
+- Reason: AUC 0.85 separates edges from non-edges on average, but with ~3,400 non-edges per removed edge no
+  pair is likely in absolute terms. The same fact was hidden in the threshold version: tau at 5% FP on
+  3.6M non-edges admits ~180,000 false edges per reconstruction against ~1,000 removed ones.
+- Probability quality: the best methods (edge_reconstruction and the conditional residual diffusion) beat the
+  base rate by ~13% in log-loss; clamp_only 12%; no_diffusion 9%. Diffusion helps a little, not decisively.
+- Default edge_decision set back to "threshold" until the students decide how p_e should be defined.
+
+Options for the p_e definition (decision pending):
+1. Relative (base-rate-free) recoverability: in each reconstruction compare the removed edge with a
+   randomly drawn non-edge of the same damaged graph; p_e = frequency with which the edge scores higher.
+   Graded, threshold-free, control pairs ~0.5 by construction; = per-edge AUC contribution.
+2. Lift: expected p_e divided by the base rate ("x times more likely than a random pair").
+3. Calibration against a balanced reference (50/50): readable values, but reconstructions are not
+   realistic graphs.

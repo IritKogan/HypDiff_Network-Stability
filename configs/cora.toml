@@ -99,3 +99,10 @@ sampler = "one_step"             # "iterative" (t* .. 0 reverse loop, upstream-s
 eta = 1.0                        # stochastic only: 0 = deterministic (= iterative), 1 = ancestral-like
 steps = 20                       # stochastic only: network calls from t* to 0 (strided schedule)
 reconstructions = 10             # K per damaged graph
+# Decision 10 (2026-11-17): a reconstruction draws every evaluated pair from a Bernoulli with the
+# CALIBRATED decoder probability (Platt scaling fitted on validation pairs only, weighted to the real
+# base rate, prior-shifted to the number of removed edges). "threshold" = previous rule p >= tau.
+edge_decision = "threshold"      # "bernoulli" | "threshold". Default kept at "threshold": at the real base rate the
+                                 # calibrated probabilities of removed edges are ~0.001 (docs/conditional-diffusion-design.md
+                                 # section 13), so Bernoulli p_e is ~0 for almost every edge. Open decision.
+calibration_folds = 2            # cross-fitting folds for the validation calibration-quality report

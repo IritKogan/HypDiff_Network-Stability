@@ -23,6 +23,7 @@ T_SAMPLING = ("per_graph", "per_node")
 ANGULAR_NOISE = ("upstream", "folded")
 PARAMETERIZATIONS = ("direct", "preconditioned", "geometric")
 SAMPLERS = ("iterative", "one_step", "stochastic")
+EDGE_DECISIONS = ("threshold", "bernoulli")
 TAU_MODES = ("fixed", "val_fpr")
 DIFFUSION_STEPS = 200  # upstream HypDiff num_timesteps (hard-coded upstream)
 
@@ -121,6 +122,8 @@ class RecoveryConfig:
     eta: float
     steps: int
     reconstructions: int
+    edge_decision: str
+    calibration_folds: int
 
 
 @dataclass(frozen=True)
@@ -304,5 +307,7 @@ def _validate(config: ExperimentConfig) -> None:
     _require(rec.sampler in SAMPLERS, f"recovery.sampler in {SAMPLERS}")
     _require(0.0 <= rec.eta <= 1.0, "recovery.eta must be in [0, 1]")
     _require(rec.steps >= 1, "recovery.steps must be positive")
+    _require(rec.edge_decision in EDGE_DECISIONS, f"recovery.edge_decision in {EDGE_DECISIONS}")
+    _require(rec.calibration_folds >= 2, "recovery.calibration_folds must be >= 2")
     _require(0.0 < rec.target_fpr < 1.0, "recovery.target_fpr must be in (0, 1)")
     _require(rec.reconstructions > 0, "recovery.reconstructions must be positive")

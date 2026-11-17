@@ -12,6 +12,12 @@ validation edges vs validation negatives and, for tau_mode = "val_fpr", the
 threshold at which the false-positive rate on validation negatives equals
 ``recovery.target_fpr``. Each method gets its own tau, so methods are compared
 at the same false-positive rate.
+
+Decision 10: every method also gets a Platt calibrator fitted on the same validation
+pairs, weighted to the real base rate (validation edges stand for all edges missing from
+the validation input graph, validation negatives for all non-edges), used by
+edge_decision = "bernoulli"; plus cross-fitted log-loss / Brier / ECE at that base rate
+(probability-quality criterion for model selection).
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from sklearn.metrics import roc_auc_score
 import torch
 
 from stability.model_training import normalized_adjacency
+from stability.probability_calibration import base_rate_weights, cross_fitted_quality, fit_platt
 
 VALIDATION_SERIES_INDEX = 1_000_000  # recovery seeds disjoint from evaluation series
 
@@ -62,6 +69,26 @@ def _method_summary(positive: np.ndarray, negative: np.ndarray, config) -> dict[
     }
 
 
+def validation_base_rate(graph, split) -> dict[str, int]:
+    """Missing edges / non-edges of the validation input graph (train edges only)."""
+    n = graph.node_count
+    return {"missing_edges": int(len(split.val) + len(split.pool)),
+            "non_edges": int(n * (n - 1) // 2 - len(split.all_edges))}
+
+
+def _calibration(positive, negative, counts, config) -> dict[str, Any]:
+    positive = np.asarray(positive, dtype=np.float64)
+    negative = np.asarray(negative, dtype=np.float64)
+    w_pos, w_neg = base_rate_weights(counts["missing_edges"], counts["non_edges"],
+                                     positive.shape[-1], negative.shape[-1])
+    calibrator = fit_platt(positive, negative, w_pos, w_neg)
+    return {
+        "calibrator": calibrator.to_dict(),
+        "cross_fitted": cross_fitted_quality(positive, negative, w_pos, w_neg,
+                                             config.recovery.calibration_folds, config.recovery.seed),
+    }
+
+
 def validation_recovery(graph, split, models, config, device) -> dict[str, Any]:
     from stability.edge_recovery_experiment import recovery_seed
 
@@ -89,11 +116,16 @@ def validation_recovery(graph, split, models, config, device) -> dict[str, Any]:
             )
             diff_pos.append(models.encoder.decode(recovered, positive_pairs).cpu().numpy())
             diff_neg.append(models.encoder.decode(recovered, negative_pairs).cpu().numpy())
-    return {
+    counts = validation_base_rate(graph, split)
+    methods = {"no_diffusion": (base_pos, base_neg), "clamp_only": (clamp_pos, clamp_neg),
+               "diffusion": (np.stack(diff_pos), np.stack(diff_neg))}
+    result = {
         "protocol": "train edges only as input; validation edges vs validation negatives",
         "tau_mode": rec.tau_mode,
         "target_fpr": rec.target_fpr if rec.tau_mode == "val_fpr" else None,
-        "no_diffusion": _method_summary(base_pos, base_neg, config),
-        "clamp_only": _method_summary(clamp_pos, clamp_neg, config),
-        "diffusion": _method_summary(np.stack(diff_pos), np.stack(diff_neg), config),
+        "base_rate": counts,
     }
+    for name, (positive, negative) in methods.items():
+        result[name] = {**_method_summary(positive, negative, config),
+                        "calibration": _calibration(positive, negative, counts, config)}
+    return result
