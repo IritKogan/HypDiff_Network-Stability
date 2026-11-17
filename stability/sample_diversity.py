@@ -104,6 +104,34 @@ def incremental_log_likelihood(base_score: np.ndarray, extra: np.ndarray, labels
     return results
 
 
+def calibration_table(score: np.ndarray, labels: np.ndarray, weights: np.ndarray | None = None,
+                      bins: int = 10) -> dict[str, Any]:
+    """Reliability of ``score`` as a probability that the pair is an edge.
+
+    ``weights`` re-weight pairs to the real base rate (validation sets are balanced while
+    real candidate pairs are mostly non-edges). Bins are equal-width on [0, 1]; scores of
+    exactly 1 fall in the last bin. ECE = weighted mean |observed - mean score|.
+    """
+    score = np.asarray(score, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.float64)
+    weights = np.ones_like(score) if weights is None else np.asarray(weights, dtype=np.float64)
+    if not (score.shape == labels.shape == weights.shape):
+        raise ValueError("score, labels and weights must have the same shape")
+    index = np.minimum((score * bins).astype(int), bins - 1)
+    rows, ece, total = [], 0.0, weights.sum()
+    for b in range(bins):
+        mask = index == b
+        if not mask.any():
+            continue
+        w = weights[mask]
+        observed = float(np.sum(w * labels[mask]) / w.sum())
+        predicted = float(np.sum(w * score[mask]) / w.sum())
+        ece += w.sum() / total * abs(observed - predicted)
+        rows.append({"bin": b, "pairs": int(mask.sum()), "weight": float(w.sum()),
+                     "mean_score": predicted, "observed": observed})
+    return {"ece": float(ece), "bins": rows}
+
+
 def probability_diversity(positive: np.ndarray, negative: np.ndarray, tau: float) -> dict[str, Any]:
     """positive / negative: (K, pairs) decoded probabilities of edges / non-edges."""
     positive = np.asarray(positive, dtype=np.float64)

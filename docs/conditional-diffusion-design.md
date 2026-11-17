@@ -126,3 +126,35 @@ sampling: ~20x the current recovery cost -> Colab GPU.
 4. HypDiff's restricted noise is not zero-mean; handled by the oracle test.
 5. Departure from the book (conditional training, stochastic DDIM sampler): needs advisor
    approval and a book update.
+
+## 10. Pilot results (2026-11-17, commit after 1da6dbc)
+
+Run: `scripts/sweep_conditional.py` (validation only), 8 variants = architecture
+{conditional_gcn, conditional_residual_gcn} x angular_noise {upstream, folded} x clip_x0,
+5000 epochs, edge_loss_weight 1, per_graph t, t* {30, 60, 100, 150} x eta {0, 0.5, 1},
+20 steps, K = 10. Output: artifacts/sweeps/conditional_pilot/sweep_conditional.json.
+
+Findings:
+- Quality is fine: AUC 0.84-0.865, hit up to 0.50 (residual, no clip) vs clamp_only 0.473.
+  The mean probability is better calibrated at the real base rate without clip
+  (ECE 0.05-0.08 vs 0.18-0.19 with clip).
+- Requirement (b) still fails: p_e in (0, 1) for at most 12% of validation edges; stratified
+  AUC of p_e within the model's own mean 0.46-0.64; LL gain <= 0.008 nats/pair.
+- **eta has no effect** (eta = 0 vs 1 give the same numbers): the sampler's noise does not
+  reach the output.
+- Cause (direct check on trained checkpoints): the network ignores x_t and predicts from
+  the condition alone. Even at t = 2 (noise 0.05) its error is 0.064 (residual) / 0.119
+  (gcn) while x_t itself is within ~0.003; the spread of x0_hat across noise draws is
+  0.003-0.09. This is the known "condition shortcut" of conditional diffusion: the damaged
+  embedding explains most of x_0, so a plain x0-predicting network learns E[x_0 | c] and the
+  reverse process collapses to one answer. The clean-vs-damaged difference itself is not
+  small (std 0.24-0.49 in standardised units for 10-40% edge drop), so there is real
+  uncertainty to represent.
+
+Proposed fix (next step): preconditioned x0 prediction (as in EDM / a Bayesian prior centred
+on the condition): x0_hat = k_t * (x_t - s_t E[eps]) / a_t + (1 - k_t) * c + out_t * F(x_t, c, A, t),
+k_t = a_t^2 v / (a_t^2 v + s_t^2 Var[eps]), v = Var(x_0 - c) measured on training damage
+(~0.09). With F = 0 this is the exact posterior mean under a Gaussian prior x_0 ~ N(c, v);
+it forces the model to use x_t at small t and lets the sampler's fresh noise propagate,
+while F learns where the damaged graph is uncertain. Test: oracle/prior sampler reproduces
+N(c, v); then re-run the pilot and check (b).

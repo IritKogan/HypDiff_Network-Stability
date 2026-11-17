@@ -68,3 +68,19 @@ def test_incremental_log_likelihood_detects_extra_information():
     useless = incremental_log_likelihood(base, rng.normal(size=n), labels)
     assert useful["gain_per_pair"] > 0.1
     assert abs(useless["gain_per_pair"]) < 0.01
+
+
+def test_calibration_table_is_zero_for_a_calibrated_score_and_uses_weights():
+    from stability.sample_diversity import calibration_table
+
+    rng = np.random.default_rng(4)
+    score = rng.random(200000)
+    labels = (rng.random(200000) < score).astype(int)
+    assert calibration_table(score, labels)["ece"] < 0.01
+    # constant score 0.5 on a balanced set is calibrated; with negatives weighted x9 it is not
+    labels = np.r_[np.ones(100), np.zeros(100)]
+    score = np.full(200, 0.5)
+    assert calibration_table(score, labels)["ece"] == pytest.approx(0.0)
+    weighted = calibration_table(score, labels, np.r_[np.ones(100), 9 * np.ones(100)])
+    assert weighted["ece"] == pytest.approx(0.4)
+    assert weighted["bins"][0]["observed"] == pytest.approx(0.1)
