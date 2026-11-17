@@ -270,3 +270,39 @@ Options for the p_e definition (decision pending):
 2. Lift: expected p_e divided by the base rate ("x times more likely than a random pair").
 3. Calibration against a balanced reference (50/50): readable values, but reconstructions are not
    realistic graphs.
+
+## 14. Chosen p_e definition: pairwise (relative) recoverability — first Cora run (2026-11-17)
+
+Students' choice (option 1 of section 13), implemented in f5da64a (edge_decision = "pairwise", default):
+in every reconstruction a removed edge "reappears" if its decoded probability is strictly higher than that
+of a reference pair drawn uniformly from the control pairs (true non-edges never used in training) of the
+same reconstruction; control pairs are compared with other control pairs, so their frequency is ~0.5 by
+construction. p_e = r_e / (n_e K) as in Decision 1. No threshold, no calibration. expected_p_e = share of
+control pairs scored lower (same quantity without the draw noise). The mean of p_e over edges equals the
+AUC of removed edges vs control pairs, so p_e is the per-edge contribution to that AUC.
+
+Run: configs/cora.toml at f5da64a (Decision 8 denoiser: residual, edge_reconstruction, one_step, t* = 7),
+CPU, 616 s; artifacts/runs/cora_edge_recovery_20261117T164522Z (not in git). Validation AUC: no_diffusion
+0.825, clamp_only 0.852, diffusion 0.848.
+
+| attack | damage | p_e mean (diffusion) | clamp_only | no_diffusion | control | same / different class | share p_e = 1 | 5th pct |
+|---|---|---|---|---|---|---|---|---|
+| random | 10% | 0.870 | 0.859 | 0.824 | 0.500 | 0.886 / 0.802 | 0.28 | 0.42 |
+| random | 20% | 0.866 | 0.856 | 0.830 | 0.500 | 0.882 / 0.799 | 0.17 | 0.40 |
+| random | 30% | 0.861 | 0.852 | 0.828 | 0.500 | 0.878 / 0.794 | 0.12 | 0.37 |
+| targeted_weighted | 10% | 0.886 | 0.869 | 0.857 | 0.500 | 0.904 / 0.817 | 0.34 | 0.50 |
+| targeted_weighted | 20% | 0.873 | 0.862 | 0.850 | 0.500 | 0.890 / 0.802 | 0.20 | 0.42 |
+| targeted_weighted | 30% | 0.862 | 0.856 | 0.839 | 0.500 | 0.880 / 0.787 | 0.12 | 0.38 |
+| targeted_deterministic | 10% | 0.905 | 0.848 | 0.844 | 0.502 | 0.918 / 0.861 | | |
+| targeted_deterministic | 20% | 0.900 | 0.859 | 0.862 | 0.500 | 0.917 / 0.838 | | |
+| targeted_deterministic | 30% | 0.895 | 0.866 | 0.866 | 0.500 | 0.914 / 0.824 | | |
+
+Observations (preliminary):
+- p_e is graded (random 20%: median 0.95, 5th percentile 0.40, only 0.1% exactly 0), and clearly separated
+  from the control distribution (KS 0.59-0.62, Wasserstein 0.36-0.39).
+- Ordering diffusion > clamp_only > no_diffusion holds at every level and attack.
+- Same-class edges are more recoverable than different-class edges (gap ~0.08-0.09, growing with damage).
+- p_e declines mildly with damage (random 0.870 -> 0.861); targeted attacks start higher (edges between
+  high-degree nodes are easier to recover) and decline faster.
+- Caveat: the share of p_e exactly 1 depends on n_e (edges removed in more series get more draws); compare
+  levels with expected_p_e or at matched n_e.
