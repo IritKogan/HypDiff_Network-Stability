@@ -306,3 +306,29 @@ Observations (preliminary):
   high-degree nodes are easier to recover) and decline faster.
 - Caveat: the share of p_e exactly 1 depends on n_e (edges removed in more series get more draws); compare
   levels with expected_p_e or at matched n_e.
+
+## 15. Last attempt: structural (edge-level) sampling — negative (2026-11-17)
+
+Idea: the real unknown is WHICH edges are missing, so let each reconstruction sample a set of edges to add
+(Gumbel-top-R' over all 3.66M candidate pairs, temperature T), re-encode the completed graph and score
+again (stability/iterative_reconstruction.py, scripts/diagnose_iterative_reconstruction.py; validation only,
+Decision 8 denoiser, K = 10, R = 2639 unknown edges; 96 s on CPU).
+
+| setting | AUC | score std across K | stratified AUC of p_e within own mean | LL gain | precision of added pairs |
+|---|---|---|---|---|---|
+| one round (current pipeline) | 0.856 | 0.011 | 0.48 | +0.0003 | - |
+| add 5% of R, T = 0 (top) | 0.856 | 0.011 | 0.47 | +0.0005 | 0.034 |
+| add 25%, T = 0.5 | 0.854 | 0.025 | 0.50 | +0.0001 | 0.009 |
+| add 50%, T = 1 | 0.854 | 0.045 | 0.49 | -0.0002 | 0.006 |
+| add 100%, T = 0 (top) | 0.855 | 0.012 | 0.49 | +0.0001 | 0.035 |
+| add 100%, T = 1 | 0.855 | 0.049 | 0.51 | +0.0002 | 0.007 |
+
+(full 13-row grid in artifacts/diagnostics/iterative_reconstruction.json.)
+
+- Even the model's top-2639 candidates contain only ~3.5% truly missing edges (same base-rate fact as §13),
+  so sampled completions consist mostly of wrong edges. Re-encoding them changes scores (spread up to 0.05)
+  but the spread is again uninformative (stratified AUC 0.47-0.51, LL gain ~0) and AUC does not improve.
+- Conclusion (four model families + structural sampling): on Cora, randomness inside the reconstruction does
+  not carry information about which edges are recoverable. The probabilistic content of the measure comes
+  from the random damage scenarios (resampling), with the hyperbolic model as the (best) recovery engine.
+  This matches the advisors' resampling-based stability framework (Volkovich et al., 2011).
