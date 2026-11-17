@@ -95,3 +95,16 @@ def test_end_to_end_pairwise(graph, tmp_path):
             assert 0.0 <= entry["p_e"]["mean"] <= 1.0
             assert abs(entry["control_false_positive"]["mean"] - 0.5) < 0.15
             assert "expected_p_e" in entry
+
+
+def test_kept_reconstructions_sum_to_the_recovered_counts(graph, trained):
+    config, split, models, series = trained
+    results = run_recoveries(graph, split, series, models, config, torch.device("cpu"), taus={},
+                             keep_reconstructions=True)
+    for arrays in results.values():
+        kept = arrays["recovered_by_reconstruction"]
+        assert kept.shape[2] == config.recovery.reconstructions
+        assert np.array_equal(kept.sum(axis=2), arrays["recovered"])
+        assert not kept[~np.broadcast_to(arrays["removed"][:, :, None, :], kept.shape)].any()
+    plain = run_recoveries(graph, split, series, models, config, torch.device("cpu"), taus={})
+    assert "recovered_by_reconstruction" not in next(iter(plain.values()))

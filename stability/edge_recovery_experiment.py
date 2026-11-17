@@ -120,6 +120,7 @@ def run_recoveries(
     taus: dict[str, float],
     log: bool = False,
     calibrators: dict[str, PlattCalibrator] | None = None,
+    keep_reconstructions: bool = False,
 ) -> dict[str, dict[str, np.ndarray]]:
     """taus: {"diffusion", "no_diffusion", "clamp_only"} -> per-method thresholds.
 
@@ -137,6 +138,9 @@ def run_recoveries(
     so control frequencies are ~0.5 by construction. Base-rate and threshold free. Reference draws:
     SeedSequence([seed, PAIRWISE_STREAM, method, series, level, k]) (common random numbers).
     The expected value per draw (no draw noise) is the share of control pairs scored strictly lower.
+
+    keep_reconstructions: also return "recovered_by_reconstruction" (levels, series, K, pool) bool, the
+    diffusion outcome of every single reconstruction (it sums over K to "recovered"); used by viewers.
     """
     rec = config.recovery
     bernoulli = rec.edge_decision == "bernoulli"
@@ -186,6 +190,8 @@ def run_recoveries(
         control_shape = (levels, len(items), len(split.control_pairs))
         removed = np.zeros(shape, dtype=bool)
         recovered = np.zeros(shape, dtype=np.int16)
+        by_reconstruction = (np.zeros((levels, len(items), rec.reconstructions, len(split.pool)), dtype=bool)
+                             if keep_reconstructions else None)
         recovered_probability = np.zeros(shape, dtype=np.float32)    # sum over K
         no_diffusion = np.zeros(shape, dtype=np.int16)
         no_diffusion_probability = np.zeros(shape, dtype=np.float32)
@@ -254,6 +260,8 @@ def run_recoveries(
                         hit, control_hit, q_r, q_c = decide("diffusion", p_removed, p_control,
                                                             pool_index, s, level, k)
                         recovered[level, s, pool_index] += hit
+                        if by_reconstruction is not None:
+                            by_reconstruction[level, s, k, pool_index] = hit
                         recovered_probability[level, s, pool_index] += p_removed
                         control_hits[level, s] += control_hit
                         control_probability_sum[level, s] += p_control
@@ -279,6 +287,7 @@ def run_recoveries(
             "control_clamp_only": control_clamp_only,
             "control_clamp_only_probability": control_clamp_only_probability,
             "deterministic_draws": np.asarray(draws),
+            **({"recovered_by_reconstruction": by_reconstruction} if by_reconstruction is not None else {}),
             **{f"{m}_expected_sum": expected[m] for m in METHOD_CODES},
             **{f"control_{m}_expected_sum": control_expected[m] for m in METHOD_CODES},
         }

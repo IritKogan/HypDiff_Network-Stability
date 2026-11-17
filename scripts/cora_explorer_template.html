@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cora edge-recovery stability explorer</title>
+<style>
+:root{color-scheme:light;--ink:#17212f;--muted:#526174;--paper:#f2f5f8;--panel:#fff;--line:#d6dde7;--navy:#10233f;
+--survive:#8a96a8;--removed:#bd2638;--recovered:#00836f;--control:#7a8494;
+--lv0:#86b6ef;--lv1:#2a78d6;--lv2:#104281;--m-diff:#2a78d6;--m-clamp:#eb6834;--m-none:#1baf7a}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.4 "Segoe UI",Arial,sans-serif}
+header{background:var(--navy);color:#fff;padding:14px 28px}header h1{margin:0;font-size:24px}
+header p{margin:3px 0 0;color:#c9d7ea;font-size:14px}
+main{max-width:1700px;margin:auto;padding:18px 28px 40px}
+.controls{display:grid;grid-template-columns:1.6fr 1fr 1.2fr 1fr 2fr;gap:12px;margin-bottom:14px}
+.controls label{display:block;font-weight:700;margin-bottom:5px;font-size:14px}
+select{width:100%;font:inherit;font-size:15px;padding:8px 9px;border:1px solid #8794a7;border-radius:6px;background:#fff;color:var(--ink)}
+select:disabled{background:#eef1f5;color:#8a96a8}
+.pickers{display:flex;gap:6px;margin-top:6px}.pickers button{flex:1;font:inherit;font-size:13px;padding:4px 6px;border:1px solid var(--line);border-radius:5px;background:#fff;cursor:pointer;color:var(--ink)}
+.pickers button:hover{background:#edf1f6}
+.cards{display:grid;grid-template-columns:1.25fr repeat(4,1fr);gap:12px;margin:0 0 14px}
+.metric{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 14px;min-height:86px;box-shadow:0 3px 12px #12233b0b}
+.metric .l{font-size:13px;font-weight:700;color:var(--muted)}.metric .v{font-size:26px;font-weight:750;margin-top:4px;line-height:1.1;font-variant-numeric:tabular-nums}
+.metric .m{font-size:12.5px;color:var(--muted);margin-top:3px}
+.metric.hero{background:var(--navy);border-color:var(--navy);color:#fff}.metric.hero .l,.metric.hero .m{color:#d7e5f7}.metric.hero .v{font-size:36px}
+.note{background:#fff;border:1px solid var(--line);border-left:5px solid var(--navy);border-radius:8px;padding:9px 14px;margin:0 0 14px;font-size:14px;color:#2b394d}
+.note b{color:var(--ink)}
+.graphs{display:grid;grid-template-columns:repeat(3,minmax(300px,1fr));gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:0 4px 14px #12233b0b}
+.card h2{margin:0;padding:10px 14px;border-bottom:1px solid var(--line);font-size:17px}
+.card h2 small{font-weight:400;color:var(--muted);font-size:13px;margin-left:6px}
+.card svg.g{display:block;width:100%;height:auto}
+.legend{display:flex;align-items:center;justify-content:center;gap:10px 24px;flex-wrap:wrap;margin:10px 0 4px;font-size:13.5px;color:#2b394d}
+.key{display:inline-flex;align-items:center;gap:7px;white-space:nowrap}.sw{display:inline-block;width:28px;height:0;border-top:3px solid}
+.ramp{display:inline-block;width:90px;height:10px;border-radius:2px}
+.focus{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:10px 0 16px}
+.focus div{border-left:4px solid var(--line);padding:2px 9px}.focus .l{font-size:12.5px;color:var(--muted);font-weight:700}.focus .v{font-size:19px;font-weight:750;font-variant-numeric:tabular-nums}
+.focus .first{border-color:var(--navy)}
+h3.section{font-size:19px;margin:22px 0 4px}p.cap{font-size:14px;color:var(--muted);margin:0 0 10px}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;box-shadow:0 3px 12px #12233b0b;position:relative}
+.chart h4{margin:0 0 2px;font-size:16px}.chart p{margin:0 0 6px;font-size:13px;color:var(--muted)}
+.chart svg{display:block;width:100%;height:auto}
+.ax{font:12px "Segoe UI",Arial,sans-serif;fill:var(--muted)}.axt{font:12.5px "Segoe UI",Arial,sans-serif;fill:var(--ink);font-weight:700}
+.grid{stroke:#e3e8ef;stroke-width:1}.base{stroke:#9aa5b5;stroke-width:1}
+.dl{font:12px "Segoe UI",Arial,sans-serif;font-weight:700}
+table.t{width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px}
+table.t th,table.t td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+table.t th{background:#edf1f6;color:#25344a}
+#tip{position:fixed;pointer-events:none;background:#10233f;color:#fff;font-size:13px;padding:6px 9px;border-radius:6px;box-shadow:0 4px 14px #0003;display:none;z-index:10;max-width:320px;line-height:1.35}
+.hit{stroke:transparent;stroke-width:11;fill:none;cursor:default}
+.nd{fill:#fff;stroke:var(--navy);stroke-width:2}.nd.end{fill:var(--navy)}
+.nl{font:700 11px "Segoe UI",Arial,sans-serif;fill:var(--navy);text-anchor:middle;pointer-events:none}
+.dot{cursor:pointer}
+footer{margin-top:24px;font-size:12.5px;color:var(--muted)}
+@media (max-width:1100px){.controls,.cards{grid-template-columns:1fr 1fr}.graphs,.charts{grid-template-columns:1fr}.focus{grid-template-columns:repeat(4,1fr)}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Edge-recovery stability on Cora: HypDiff, probabilistic measure</h1>
+  <p id="sub"></p>
+</header>
+<main>
+  <div class="controls">
+    <div><label for="attack">Attack</label><select id="attack"></select></div>
+    <div><label for="level">Damage level</label><select id="level"></select></div>
+    <div><label for="view">View</label><select id="view"></select></div>
+    <div><label for="recon">Reconstruction</label><select id="recon"></select></div>
+    <div><label for="focusSel">Focus edge (drawn below)</label><select id="focusSel"></select>
+      <div class="pickers"><button data-pick="low">Least recoverable</button><button data-pick="mid">Median</button><button data-pick="high">Most recoverable</button></div></div>
+  </div>
+  <div class="cards" id="cards"></div>
+  <div class="note" id="howto"></div>
+  <div class="graphs">
+    <div class="card"><h2 id="g1t"></h2><svg class="g" id="g1" viewBox="0 0 440 360"></svg></div>
+    <div class="card"><h2 id="g2t"></h2><svg class="g" id="g2" viewBox="0 0 440 360"></svg></div>
+    <div class="card"><h2 id="g3t"></h2><svg class="g" id="g3" viewBox="0 0 440 360"></svg></div>
+  </div>
+  <div class="legend" id="glegend"></div>
+  <div class="focus" id="focusInfo"></div>
+
+  <h3 class="section" id="distTitle"></h3>
+  <p class="cap" id="distCap"></p>
+  <div class="charts">
+    <div class="chart"><h4 id="c1t"></h4><p id="c1p"></p><svg id="c1" viewBox="0 0 640 300"></svg><div class="legend" id="c1l"></div></div>
+    <div class="chart"><h4>Distribution of p_e across damage levels (ECDF)</h4><p>Further right = more recoverable. The dashed line is the control group (non-edges).</p><svg id="c2" viewBox="0 0 640 300"></svg><div class="legend" id="c2l"></div></div>
+    <div class="chart"><h4>Mean p_e by damage level and method</h4><p>Mean p_e equals the AUC of removed edges vs control pairs. Diffusion vs the two ablations.</p><svg id="c3" viewBox="0 0 640 300"></svg><div class="legend" id="c3l"></div></div>
+    <div class="chart"><h4>Variation between damage scenarios</h4><p>Each dot is one damage scenario: share of its removed edges that reappear (mean over K reconstructions). Click a dot to open it.</p><svg id="c4" viewBox="0 0 640 300"></svg></div>
+  </div>
+  <div class="chart" style="margin-top:14px"><h4>Distances between distributions</h4><p>Kolmogorov–Smirnov (max ECDF gap) and Wasserstein-1 (mean shift of mass). Selected attack.</p><table class="t" id="dist"></table></div>
+  <footer id="foot"></footer>
+</main>
+<div id="tip"></div>
+<script>
+const DATA = /*__DATA__*/null;
+const $ = id => document.getElementById(id);
+const fmt = (v, d = 3) => v == null || Number.isNaN(v) ? "–" : v.toFixed(d);
+const pct = (v, d = 1) => v == null ? "–" : (100 * v).toFixed(d) + "%";
+const N = DATA.nodes, K = DATA.K;
+const LEVEL_COLORS = ["var(--lv0)", "var(--lv1)", "var(--lv2)"];
+const METHODS = [["diffusion", "HypDiff (diffusion)", "var(--m-diff)"], ["clamp_only", "Clamp only (no denoising)", "var(--m-clamp)"],
+                 ["no_diffusion", "No diffusion (encoder only)", "var(--m-none)"]];
+
+// ---------- graph structures ----------
+const adj = Array.from({length: N}, () => []);
+const edgeKey = (u, v) => u < v ? u * N + v : v * N + u;
+for (let i = 0; i < DATA.edges.length; i += 2) { const u = DATA.edges[i], v = DATA.edges[i + 1]; adj[u].push(v); adj[v].push(u); }
+const P = DATA.pool.length / 2;
+const poolU = new Int32Array(P), poolV = new Int32Array(P), poolOf = new Map();
+for (let j = 0; j < P; j++) { poolU[j] = DATA.pool[2 * j]; poolV[j] = DATA.pool[2 * j + 1]; poolOf.set(edgeKey(poolU[j], poolV[j]), j); }
+function bitsOf(b64, n) {
+  const s = atob(b64), out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = (s.charCodeAt(i >> 3) >> (i & 7)) & 1;
+  return out;
+}
+
+// ---------- state ----------
+const st = {attack: Object.keys(DATA.attacks)[0], level: DATA.attacks[Object.keys(DATA.attacks)[0]].levels.length - 1,
+            view: "summary", k: 0, focus: null};
+const A = () => DATA.attacks[st.attack];
+const L = () => A().levels[st.level];
+
+function scenarioState() {
+  if (st.view === "summary") return null;
+  const s = +st.view, lv = L(), R = lv.removed_per_scenario;
+  const removed = A().orders[s].slice(0, R);
+  const sc = lv.scenarios[s];
+  const hits = sc.bits.map(b => bitsOf(b, R));
+  const pos = new Map(removed.map((j, i) => [j, i]));
+  const count = removed.map((_, i) => hits.reduce((a, h) => a + h[i], 0));
+  return {s, removed, hits, pos, count, sc};
+}
+
+// ---------- tooltip ----------
+const tip = $("tip");
+document.addEventListener("mousemove", e => {
+  const t = e.target.closest ? e.target.closest("[data-tip]") : null;
+  if (!t) { tip.style.display = "none"; return; }
+  tip.innerHTML = t.getAttribute("data-tip"); tip.style.display = "block";
+  const x = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8), y = Math.min(e.clientY + 14, innerHeight - tip.offsetHeight - 8);
+  tip.style.left = x + "px"; tip.style.top = y + "px";
+});
+
+// ---------- controls ----------
+function fillSelect(sel, items, value) {
+  sel.innerHTML = items.map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+  sel.value = String(value);
+}
+function setupControls() {
+  fillSelect($("attack"), Object.entries(DATA.attacks).map(([k, a]) => [k, a.label]), st.attack);
+  fillSelect($("level"), A().levels.map((l, i) => [i, `${Math.round(100 * l.fraction)}% of edges removed`]), st.level);
+  const S = A().orders.length;
+  if (st.view !== "summary" && +st.view >= S) st.view = "summary";
+  fillSelect($("view"), [["summary", S > 1 ? `Summary of all ${S} scenarios` : "Summary"],
+    ...Array.from({length: S}, (_, s) => [s, `Damage scenario #${s + 1}`])], st.view);
+  fillSelect($("recon"), Array.from({length: K}, (_, k) => [k, `Reconstruction ${k + 1} of ${K}`]), st.k);
+  $("recon").disabled = st.view === "summary";
+}
+function candidates(ss) {
+  const lv = L();
+  if (ss) return ss.removed.map((j, i) => ({j, score: ss.count[i] / K, pe: lv.p_e[j]}));
+  const out = [];
+  for (let j = 0; j < P; j++) if (lv.n_e[j] > 0) out.push({j, score: lv.p_e[j], pe: lv.p_e[j]});
+  return out;
+}
+function neighbourhood(j) {
+  const u = poolU[j], v = poolV[j];
+  const set = new Set([u, v]);
+  let nb = [...new Set([...adj[u], ...adj[v]])].filter(x => x !== u && x !== v);
+  nb.sort((a, b) => (adj[a].includes(u) && adj[a].includes(v) ? -1 : 0) - (adj[b].includes(u) && adj[b].includes(v) ? -1 : 0) || adj[a].length - adj[b].length);
+  nb.slice(0, 32).forEach(x => set.add(x));
+  return [...set];
+}
+function setupFocus(keep) {
+  const ss = scenarioState(), c = candidates(ss);
+  c.sort((a, b) => b.score - a.score || b.pe - a.pe);
+  const lbl = x => ss ? `${poolU[x.j]}–${poolV[x.j]} · returned ${Math.round(x.score * K)}/${K} · p_e ${fmt(x.pe, 2)}`
+                      : `${poolU[x.j]}–${poolV[x.j]} · p_e ${fmt(x.pe, 2)}`;
+  fillSelect($("focusSel"), c.map(x => [x.j, lbl(x)]), "");
+  st.cands = c;
+  if (keep && st.focus != null && c.some(x => x.j === st.focus)) { $("focusSel").value = st.focus; return; }
+  pick("mid");
+}
+function pick(which) {
+  const c = st.cands; if (!c.length) return;
+  const ok = c.filter(x => { const n = neighbourhood(x.j).length; return n >= 7 && n <= 30; });
+  const pool = ok.length ? ok : c;
+  const idx = which === "high" ? 0 : which === "low" ? pool.length - 1 : Math.floor(pool.length / 2);
+  st.focus = pool[idx].j; $("focusSel").value = st.focus; render();
+}
+
+// ---------- layout ----------
+const layoutCache = new Map();
+function layout(nodes, edges, u, v) {
+  const key = nodes.join(","); if (layoutCache.has(key)) return layoutCache.get(key);
+  const n = nodes.length, idx = new Map(nodes.map((x, i) => [x, i]));
+  const pos = nodes.map((x, i) => x === u ? [-0.15, 0] : x === v ? [0.15, 0] : [Math.cos(2 * Math.PI * i / n), Math.sin(2 * Math.PI * i / n)]);
+  const E = edges.map(([a, b]) => [idx.get(a), idx.get(b)]), k = 1.6 / Math.sqrt(n);
+  for (let it = 0, T = 0.12; it < 400; it++, T *= 0.992) {
+    const d = pos.map(() => [0, 0]);
+    for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) {
+      let dx = pos[a][0] - pos[b][0], dy = pos[a][1] - pos[b][1], r = Math.hypot(dx, dy) + 1e-6, f = k * k / r;
+      d[a][0] += dx / r * f; d[a][1] += dy / r * f; d[b][0] -= dx / r * f; d[b][1] -= dy / r * f;
+    }
+    for (const [a, b] of E) {
+      let dx = pos[a][0] - pos[b][0], dy = pos[a][1] - pos[b][1], r = Math.hypot(dx, dy) + 1e-6, f = r * r / k;
+      d[a][0] -= dx / r * f; d[a][1] -= dy / r * f; d[b][0] += dx / r * f; d[b][1] += dy / r * f;
+    }
+    for (let a = 0; a < n; a++) {
+      const m = Math.hypot(...d[a]) + 1e-9, s = Math.min(m, T) / m;
+      pos[a][0] += d[a][0] * s - pos[a][0] * 0.01; pos[a][1] += d[a][1] * s - pos[a][1] * 0.01;
+    }
+  }
+  const xs = pos.map(p => p[0]), ys = pos.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const sc = Math.min(400 / (x1 - x0 || 1), 320 / (y1 - y0 || 1));
+  const out = new Map(nodes.map((x, i) => [x, [20 + (pos[i][0] - x0) * sc + (400 - (x1 - x0) * sc) / 2, 20 + (pos[i][1] - y0) * sc + (320 - (y1 - y0) * sc) / 2]]));
+  layoutCache.set(key, out); return out;
+}
+
+// ---------- colour ramps ----------
+function lerpHex(a, b, t) {
+  const p = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)), A1 = p(a), B1 = p(b);
+  return "#" + A1.map((x, i) => Math.round(x + (B1[i] - x) * t).toString(16).padStart(2, "0")).join("");
+}
+const RAMP_BLUE = ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"];
+const RAMP_ORANGE = ["#fde3d6", "#f6a57f", "#eb6834", "#b8461b", "#7a2c0e"];
+function ramp(r, t) { t = Math.max(0, Math.min(1, t)) * (r.length - 1); const i = Math.min(Math.floor(t), r.length - 2); return lerpHex(r[i], r[i + 1], t - i); }
+
+// ---------- graph panels ----------
+function edgeTip(a, b, extra) {
+  const j = poolOf.get(edgeKey(a, b)), same = DATA.classes[a] === DATA.classes[b] ? "same class" : "different classes";
+  return `<b>${a}–${b}</b> · ${same}<br>degrees ${DATA.degree[a]} / ${DATA.degree[b]}` + (extra ? "<br>" + extra : "") +
+         (j == null ? "<br>not in the evaluation pool (training / validation edge)" : "");
+}
+function drawGraph(svgId, nodes, edges, pos, styleOf, u, v) {
+  let h = "";
+  const ord = edges.map(e => [e, styleOf(e[0], e[1])]).sort((x, y) => (x[1].z || 0) - (y[1].z || 0));
+  const fk = edgeKey(u, v);
+  for (const [[a, b], s] of ord) {
+    const [x1, y1] = pos.get(a), [x2, y2] = pos.get(b);
+    if (edgeKey(a, b) === fk) h += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#fbd38d" stroke-width="12" stroke-linecap="round" opacity=".8"/>`;
+    h += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${s.c}" stroke-width="${s.w}" ${s.dash ? `stroke-dasharray="${s.dash}"` : ""} opacity="${s.o ?? 1}" stroke-linecap="round"/>`;
+    h += `<line class="hit" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" data-tip="${edgeTip(a, b, s.tip).replace(/"/g, "&quot;")}"/>`;
+  }
+  for (const x of nodes) {
+    const [cx, cy] = pos.get(x), end = x === u || x === v;
+    h += `<circle class="nd${end ? " end" : ""}" cx="${cx}" cy="${cy}" r="${end ? 8 : 6}" data-tip="<b>node ${x}</b><br>class ${DATA.classes[x]} · community ${DATA.communities[x]}<br>degree ${DATA.degree[x]}"/>`;
+    if (end) h += `<text class="nl" x="${cx}" y="${cy - 12}">${x}</text>`;
+  }
+  $(svgId).innerHTML = h;
+}
+function renderGraphs(ss) {
+  const j = st.focus; if (j == null) return;
+  const u = poolU[j], v = poolV[j], nodes = neighbourhood(j), ns = new Set(nodes);
+  const edges = []; for (const a of nodes) for (const b of adj[a]) if (a < b && ns.has(b)) edges.push([a, b]);
+  const pos = layout(nodes, edges, u, v), lv = L(), S = A().orders.length;
+  const plain = {c: "var(--survive)", w: 2};
+  drawGraph("g1", nodes, edges, pos, () => plain, u, v);
+  $("g1t").innerHTML = `Original graph <small>neighbourhood of ${u}–${v} (${nodes.length} nodes)</small>`;
+  if (ss) {
+    const removedIdx = j2 => j2 != null && ss.pos.has(j2) ? ss.pos.get(j2) : -1;
+    drawGraph("g2", nodes, edges, pos, (a, b) => {
+      const i = removedIdx(poolOf.get(edgeKey(a, b)));
+      return i < 0 ? plain : {c: "var(--removed)", w: 2, dash: "3 5", o: .45, z: 1, tip: "removed in this scenario"};
+    }, u, v);
+    drawGraph("g3", nodes, edges, pos, (a, b) => {
+      const i = removedIdx(poolOf.get(edgeKey(a, b)));
+      if (i < 0) return plain;
+      const back = ss.hits[st.k][i], n = ss.count[i];
+      return back ? {c: "var(--recovered)", w: 4, z: 2, tip: `reappeared in reconstruction ${st.k + 1} · returned in ${n}/${K}`}
+                  : {c: "var(--removed)", w: 2.6, dash: "8 6", z: 1, tip: `did not reappear in reconstruction ${st.k + 1} · returned in ${n}/${K}`};
+    }, u, v);
+    $("g2t").innerHTML = `Damaged graph <small>scenario #${ss.s + 1}</small>`;
+    $("g3t").innerHTML = `Reconstruction ${st.k + 1} of ${K}`;
+    $("glegend").innerHTML = key("var(--survive)", "", "Surviving edge") + key("var(--removed)", "3 5", "Removed edge", .5) +
+      key("var(--recovered)", "", "Removed edge that reappeared", 1, 4) + key("var(--removed)", "8 6", "Removed edge that did not reappear") +
+      `<span class="key"><span class="sw" style="border-top:10px solid #fbd38d;width:22px"></span>Focus edge</span>`;
+  } else {
+    drawGraph("g2", nodes, edges, pos, (a, b) => {
+      const jj = poolOf.get(edgeKey(a, b)); if (jj == null) return {...plain, o: .5};
+      const n = lv.n_e[jj]; if (!n) return {c: "#c7ced8", w: 2};
+      return {c: ramp(RAMP_ORANGE, n / S), w: 3.5, z: 1, tip: `removed in ${n} of ${S} scenarios`};
+    }, u, v);
+    drawGraph("g3", nodes, edges, pos, (a, b) => {
+      const jj = poolOf.get(edgeKey(a, b)); if (jj == null) return {...plain, o: .5};
+      if (!lv.n_e[jj]) return {c: "#c7ced8", w: 2, tip: "never removed at this level"};
+      return {c: ramp(RAMP_BLUE, lv.p_e[jj]), w: 3.5, z: 1, tip: `p_e = ${fmt(lv.p_e[jj])} (removed in ${lv.n_e[jj]} scenarios × ${K} reconstructions)`};
+    }, u, v);
+    $("g2t").innerHTML = `How often each edge was removed <small>over ${S} scenario${S > 1 ? "s" : ""}</small>`;
+    $("g3t").innerHTML = `Recovery probability p_e <small>per edge</small>`;
+    $("glegend").innerHTML = key("var(--survive)", "", "Edge never removable (train / val)", .5) + key("#c7ced8", "", "Pool edge not removed at this level") +
+      `<span class="key">removed in 1 → ${S} scenarios <span class="ramp" style="background:linear-gradient(90deg,${RAMP_ORANGE.join(",")})"></span></span>` +
+      `<span class="key">p_e 0 → 1 <span class="ramp" style="background:linear-gradient(90deg,${RAMP_BLUE.join(",")})"></span></span>` +
+      `<span class="key"><span class="sw" style="border-top:10px solid #fbd38d;width:22px"></span>Focus edge</span>`;
+  }
+  const f = DATA.pool_features, same = DATA.classes[u] === DATA.classes[v];
+  const cells = [["Focus edge", `${u}–${v}`, "first"],
+    ss ? ["Returned in", `${ss.count[ss.pos.get(j)]} / ${K}`] : ["p_e (this level)", fmt(lv.p_e[j])],
+    ["Removed in", `${lv.n_e[j]} / ${S} scenarios`], ["Degrees", `${DATA.degree[u]} · ${DATA.degree[v]}`],
+    ["Common neighbours", f.common_neighbours[j]], ["Same class", same ? "yes" : "no"],
+    ["Same model community", f.same_community[j] ? "yes" : "no"],
+    f.betweenness ? ["Bridge · betweenness", `${f.bridge[j] ? "yes" : "no"} · ${fmt(f.betweenness[j], 2)}e-4`] : ["Bridge", f.bridge[j] ? "yes" : "no"]];
+  $("focusInfo").innerHTML = cells.map(([l, v, c]) => `<div class="${c || ""}"><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
+}
+function key(c, dash, label, o = 1, w = 3) {
+  return `<span class="key"><svg width="30" height="8"><line x1="1" y1="4" x2="29" y2="4" stroke="${c}" stroke-width="${w}" ${dash ? `stroke-dasharray="${dash}"` : ""} opacity="${o}"/></svg>${label}</span>`;
+}
+
+// ---------- metric cards ----------
+function renderCards(ss) {
+  const lv = L(), S = A().orders.length, pe = lv.p_e.filter((x, j) => lv.n_e[j] > 0);
+  const card = (l, v, m, hero) => `<div class="metric${hero ? " hero" : ""}"><div class="l">${l}</div><div class="v">${v}</div><div class="m">${m}</div></div>`;
+  const total = DATA.split_sizes.train + DATA.split_sizes.val + DATA.split_sizes.pool;
+  if (!ss) {
+    $("cards").innerHTML =
+      card("Mean recovery probability p_e", fmt(lv.mean.diffusion), `control (non-edges) ${fmt(lv.mean.control)} · equals AUC`, true) +
+      card("Edges removed per scenario", lv.removed_per_scenario.toLocaleString(), `${pct(lv.fraction, 0)} of ${total.toLocaleString()} edges · ${S} scenario${S > 1 ? "s" : ""} × ${K} reconstructions`) +
+      card("Distinct edges evaluated", lv.edges_evaluated.toLocaleString(), `pool edges removed at least once (pool ${DATA.split_sizes.pool.toLocaleString()})`) +
+      card("Fragile edges (p_e < 0.5)", pct(pe.filter(x => x < 0.5).length / pe.length), "recovered no better than a random non-edge") +
+      card("Shift from control (KS)", fmt(lv.vs_control.ks), `Wasserstein ${fmt(lv.vs_control.wasserstein)} · 0 = no difference`);
+  } else {
+    const R = ss.removed.length, kHits = ss.hits[st.k].reduce((a, b) => a + b, 0);
+    const all = ss.count.filter(c => c === K).length, none = ss.count.filter(c => c === 0).length;
+    $("cards").innerHTML =
+      card(`Recovery rate · scenario #${ss.s + 1}`, pct(ss.sc.mean_recovery), `share of removed edges that reappear · control ${pct(ss.sc.control_mean)}`, true) +
+      card(`Reappeared in reconstruction ${st.k + 1}`, `${kHits.toLocaleString()} / ${R.toLocaleString()}`, pct(kHits / R)) +
+      card(`Back in all ${K} reconstructions`, pct(all / R), `${all.toLocaleString()} edges`) +
+      card(`Back in none of the ${K}`, pct(none / R), `${none.toLocaleString()} edges`) +
+      card("Edges removed in this scenario", R.toLocaleString(), `${pct(lv.fraction, 0)} of ${total.toLocaleString()} edges`);
+  }
+  $("howto").innerHTML = `<b>How to read p_e.</b> After damage, HypDiff reconstructs the graph ${K} times (diffusion from t* with fresh noise). ` +
+    `In each reconstruction a removed edge <b>reappears</b> if the model scores it higher than a random non-edge (control pair) from the same reconstruction. ` +
+    `p_e = share of (scenario, reconstruction) pairs in which edge e reappears. A random non-edge gets ≈ 0.5 by construction, so 0.5 means "no better than chance".`;
+}
+
+// ---------- charts ----------
+const W = 640, H = 300, M = {l: 54, r: 20, t: 14, b: 42};
+const X = (x, x0 = 0, x1 = 1) => M.l + (x - x0) / (x1 - x0) * (W - M.l - M.r);
+const Y = (y, y0 = 0, y1 = 1) => H - M.b - (y - y0) / (y1 - y0) * (H - M.t - M.b);
+function axes(xt, yt, xticks, yticks, xf, yf, xr = [0, 1], yr = [0, 1]) {
+  let h = "";
+  for (const t of yticks) h += `<line class="grid" x1="${M.l}" x2="${W - M.r}" y1="${Y(t, ...yr)}" y2="${Y(t, ...yr)}"/><text class="ax" x="${M.l - 6}" y="${Y(t, ...yr) + 4}" text-anchor="end">${yf(t)}</text>`;
+  for (const t of xticks) h += `<text class="ax" x="${X(t, ...xr)}" y="${H - M.b + 16}" text-anchor="middle">${xf(t)}</text>`;
+  h += `<line class="base" x1="${M.l}" x2="${W - M.r}" y1="${H - M.b}" y2="${H - M.b}"/>`;
+  h += `<text class="axt" x="${(M.l + W - M.r) / 2}" y="${H - 6}" text-anchor="middle">${xt}</text>`;
+  h += `<text class="axt" transform="translate(13 ${(M.t + H - M.b) / 2}) rotate(-90)" text-anchor="middle">${yt}</text>`;
+  return h;
+}
+const leg = (c, label, dash, w = 3) => key(c, dash, label, 1, w);
+function niceTicks(a, b) {
+  const raw = (b - a) / 4, mag = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw);
+  const out = []; for (let t = Math.ceil(a / step - 1e-9) * step; t <= b + 1e-9; t += step) out.push(+t.toFixed(6)); return out;
+}
+
+function chartHistogram(ss) {
+  const lv = L();
+  if (ss) {   // per-scenario: how many of the K reconstructions brought each removed edge back
+    const cnt = Array(K + 1).fill(0); ss.count.forEach(c => cnt[c]++);
+    const R = ss.count.length, ymax = Math.max(...cnt) / R, top = Math.ceil(ymax * 10) / 10 || 0.1;
+    let h = axes(`number of reconstructions (out of ${K}) in which the edge reappeared`, "share of removed edges",
+      [...Array(K + 1).keys()], niceTicks(0, top), t => t, t => pct(t, 0), [-0.5, K + 0.5], [0, top]);
+    const bw = (X(1, -0.5, K + 0.5) - X(0, -0.5, K + 0.5)) - 4;
+    cnt.forEach((c, i) => {
+      const y = Y(c / R, 0, top), x = X(i, -0.5, K + 0.5) - bw / 2;
+      h += `<rect x="${x}" y="${y}" width="${bw}" height="${H - M.b - y}" rx="3" fill="var(--m-diff)" data-tip="${c.toLocaleString()} edges (${pct(c / R)}) reappeared in ${i}/${K}"/>`;
+    });
+    $("c1").innerHTML = h;
+    $("c1t").textContent = `Scenario #${ss.s + 1}: reappearance count per removed edge`;
+    $("c1p").textContent = `Spread across the ${K} reconstructions. Mass at 0 and ${K} means the reconstructions mostly agree.`;
+    $("c1l").innerHTML = "";
+    return;
+  }
+  const E = A().hist_edges, bins = E.length - 1, hist = Array(bins).fill(0); let n = 0;
+  const binOf = x => { let i = 0; while (i < bins - 1 && x >= E[i + 1]) i++; return i; };
+  lv.p_e.forEach((x, j) => { if (lv.n_e[j] > 0) { hist[binOf(x)]++; n++; } });
+  const bx = x => Math.max(0, Math.min(1, x));
+  const share = hist.map(c => c / n), ctrl = lv.control_hist, top = Math.ceil(Math.max(...share, ...ctrl) * 10) / 10;
+  let h = axes("p_e (recovery probability)", "share of edges / pairs", [0, .25, .5, .75, 1], niceTicks(0, top), t => t, t => pct(t, 0), [0, 1], [0, top]);
+  share.forEach((s, i) => { const y = Y(s, 0, top), x0 = X(bx(E[i])), x1 = X(bx(E[i + 1]));
+    const range = bins > 20 || E[0] < 0 ? `p_e = ${((E[i] + E[i + 1]) / 2).toFixed(2)}` : `p_e ${E[i].toFixed(2)}–${E[i + 1].toFixed(2)}`;
+    h += `<rect x="${x0 + 1}" y="${y}" width="${x1 - x0 - 2}" height="${H - M.b - y}" rx="2" fill="var(--m-diff)" data-tip="${range}: ${pct(s)} of removed edges, ${pct(ctrl[i])} of control pairs"/>`; });
+  let path = ""; ctrl.forEach((s, i) => { const y = Y(s, 0, top); path += `${i ? "L" : "M"}${X(bx(E[i]))} ${y} L${X(bx(E[i + 1]))} ${y} `; });
+  h += `<path d="${path}" fill="none" stroke="var(--control)" stroke-width="2" stroke-dasharray="6 4"/>`;
+  $("c1").innerHTML = h;
+  $("c1t").textContent = `Distribution of p_e: removed edges vs control (${pct(lv.fraction, 0)} damage)`;
+  $("c1p").textContent = "The p_e distribution is the stability measure. Control pairs (non-edges) sit around 0.5.";
+  $("c1l").innerHTML = `<span class="key"><span style="width:14px;height:12px;background:var(--m-diff);border-radius:2px;display:inline-block"></span>Removed edges (${n.toLocaleString()})</span>` +
+    leg("var(--control)", `Control pairs (${DATA.control_pairs.toLocaleString()} non-edges)`, "6 4", 2);
+}
+function ecdfPath(values, x0 = 0, x1 = 1) {
+  const v = values.slice().sort((a, b) => a - b), n = v.length; let d = `M${X(0)} ${Y(0)}`;
+  v.forEach((x, i) => { d += ` L${X(x)} ${Y(i / n)} L${X(x)} ${Y((i + 1) / n)}`; });
+  return d + ` L${X(1)} ${Y(1)}`;
+}
+function ctrlEcdfPath(hist) {
+  let c = 0, d = `M${X(0)} ${Y(0)}`; const b = hist.length;
+  const E = A().hist_edges, bx = x => Math.max(0, Math.min(1, x));
+  hist.forEach((s, i) => { d += ` L${X(bx((E[i] + E[i + 1]) / 2))} ${Y(c)} L${X(bx((E[i] + E[i + 1]) / 2))} ${Y(c + s)}`; c += s; }); return d + ` L${X(1)} ${Y(1)}`;
+}
+function chartEcdf() {
+  let h = axes("p_e", "share of edges with p_e ≤ x", [0, .25, .5, .75, 1], [0, .25, .5, .75, 1], t => t, t => pct(t, 0));
+  const lvls = A().levels;
+  h += `<path d="${ctrlEcdfPath(L().control_hist)}" fill="none" stroke="var(--control)" stroke-width="2" stroke-dasharray="6 4"/>`;
+  lvls.forEach((lv, i) => {
+    const vals = lv.p_e.filter((x, j) => lv.n_e[j] > 0);
+    h += `<path d="${ecdfPath(vals)}" fill="none" stroke="${LEVEL_COLORS[i]}" stroke-width="${i === st.level ? 3 : 2}" />`;
+  });
+  h += `<line id="c2x" class="grid" y1="${M.t}" y2="${H - M.b}" stroke="#526174" style="display:none"/><rect id="c2hit" x="${M.l}" y="${M.t}" width="${W - M.l - M.r}" height="${H - M.t - M.b}" fill="transparent"/>`;
+  $("c2").innerHTML = h;
+  $("c2l").innerHTML = lvls.map((lv, i) => leg(LEVEL_COLORS[i], `${pct(lv.fraction, 0)} damage`, "", i === st.level ? 3 : 2)).join("") + leg("var(--control)", "Control", "6 4", 2);
+  const sorted = lvls.map(lv => lv.p_e.filter((x, j) => lv.n_e[j] > 0).sort((a, b) => a - b));
+  const hit = $("c2hit"), line = $("c2x");
+  hit.onmousemove = e => {
+    const r = $("c2").getBoundingClientRect(), x = Math.max(0, Math.min(1, ((e.clientX - r.left) * W / r.width - M.l) / (W - M.l - M.r)));
+    line.setAttribute("x1", X(x)); line.setAttribute("x2", X(x)); line.style.display = "";
+    const below = a => { let lo = 0, hi = a.length; while (lo < hi) { const m = (lo + hi) >> 1; a[m] <= x ? lo = m + 1 : hi = m; } return lo / a.length; };
+    hit.setAttribute("data-tip", `<b>p_e ≤ ${x.toFixed(2)}</b><br>` + lvls.map((lv, i) => `${pct(lv.fraction, 0)} damage: ${pct(below(sorted[i]))} of edges`).join("<br>"));
+  };
+  hit.onmouseleave = () => { line.style.display = "none"; };
+}
+function chartMethods() {
+  const lvls = A().levels, xr = [-0.3, lvls.length - 0.7];
+  const all = lvls.flatMap(lv => [lv.mean.diffusion, lv.mean.clamp_only, lv.mean.no_diffusion, lv.mean.control]);
+  const y0 = Math.floor(Math.min(...all) * 10) / 10, y1 = Math.min(1, Math.ceil(Math.max(...all) * 20) / 20 + 0.02);
+  const ticks = []; for (let t = y0; t <= y1 + 1e-9; t += 0.1) ticks.push(+t.toFixed(2));
+  let h = axes("damage level", "mean p_e (= AUC)", lvls.map((_, i) => i), ticks, i => pct(lvls[i].fraction, 0), t => t.toFixed(1), xr, [y0, y1]);
+  h += `<rect x="${X(st.level - 0.25, ...xr)}" y="${M.t}" width="${X(0.5, ...xr) - X(0, ...xr)}" height="${H - M.t - M.b}" fill="#edf1f6"/>`;
+  const series = [...METHODS, ["control", "Control (non-edges)", "var(--control)"]];
+  series.forEach(([m, label, c]) => {
+    const pts = lvls.map((lv, i) => [X(i, ...xr), Y(lv.mean[m], y0, y1)]);
+    h += `<path d="${pts.map((p, i) => (i ? "L" : "M") + p.join(" ")).join(" ")}" fill="none" stroke="${c}" stroke-width="2" ${m === "control" ? 'stroke-dasharray="6 4"' : ""}/>`;
+    pts.forEach((p, i) => h += `<circle cx="${p[0]}" cy="${p[1]}" r="5" fill="${c}" stroke="#fff" stroke-width="2" data-tip="<b>${label}</b><br>${pct(lvls[i].fraction, 0)} damage: mean p_e ${fmt(lvls[i].mean[m])}"/>`);
+  });
+  $("c3").innerHTML = h;
+  $("c3l").innerHTML = series.map(([m, label, c]) => leg(c, label, m === "control" ? "6 4" : "", 2)).join("");
+}
+function chartScenarios(ss) {
+  const lvls = A().levels, xr = [-0.5, lvls.length - 0.5];
+  const vals = lvls.flatMap(lv => lv.scenarios.map(s => s.mean_recovery));
+  const y0 = Math.max(0, Math.floor(Math.min(...vals) * 50) / 50 - 0.02), y1 = Math.min(1, Math.ceil(Math.max(...vals) * 50) / 50 + 0.02);
+  const ticks = niceTicks(y0, y1);
+  let h = axes("damage level", "share of removed edges that reappear", lvls.map((_, i) => i), ticks, i => pct(lvls[i].fraction, 0), t => pct(t, 0), xr, [y0, y1]);
+  lvls.forEach((lv, i) => {
+    const S = lv.scenarios.length;
+    lv.scenarios.forEach((s, k) => {
+      const x = X(i + (S > 1 ? (k / (S - 1) - 0.5) * 0.5 : 0), ...xr), y = Y(s.mean_recovery, y0, y1);
+      const sel = ss && ss.s === k && i === st.level;
+      h += `<circle class="dot" data-s="${k}" data-l="${i}" cx="${x}" cy="${y}" r="${sel ? 8 : 5}" fill="${sel ? "var(--navy)" : LEVEL_COLORS[i]}" stroke="#fff" stroke-width="2" data-tip="<b>Scenario #${k + 1}</b>, ${pct(lv.fraction, 0)} damage<br>recovery ${pct(s.mean_recovery)} · control ${pct(s.control_mean)}"/>`;
+    });
+    const m = lv.scenarios.reduce((a, s) => a + s.mean_recovery, 0) / S;
+    h += `<line x1="${X(i - 0.3, ...xr)}" x2="${X(i + 0.3, ...xr)}" y1="${Y(m, y0, y1)}" y2="${Y(m, y0, y1)}" stroke="var(--ink)" stroke-width="2"/>`;
+    h += `<text class="dl" x="${X(i + 0.32, ...xr)}" y="${Y(m, y0, y1) + 4}" fill="var(--ink)">${pct(m)}</text>`;
+  });
+  $("c4").innerHTML = h;
+  $("c4").querySelectorAll(".dot").forEach(d => d.onclick = () => {
+    st.level = +d.dataset.l; st.view = d.dataset.s; setupControls(); setupFocus(true); render();
+  });
+}
+function renderDistTable() {
+  const a = A();
+  let h = "<tr><th>Comparison</th><th>KS</th><th>Wasserstein-1</th><th>Difference in mean p_e</th></tr>";
+  a.levels.forEach(lv => h += `<tr><td>Removed edges vs control, ${pct(lv.fraction, 0)} damage</td><td>${fmt(lv.vs_control.ks)}</td><td>${fmt(lv.vs_control.wasserstein)}</td><td>${fmt(lv.mean.diffusion - lv.mean.control)}</td></tr>`);
+  a.between_levels.forEach(b => h += `<tr><td>${pct(b.from, 0)} → ${pct(b.to, 0)} damage</td><td>${fmt(b.ks)}</td><td>${fmt(b.wasserstein)}</td><td>${b.mean_change >= 0 ? "+" : ""}${fmt(b.mean_change)}</td></tr>`);
+  $("dist").innerHTML = h;
+}
+
+// ---------- render ----------
+function render() {
+  const ss = scenarioState(), lv = L();
+  renderCards(ss); renderGraphs(ss); chartHistogram(ss); chartEcdf(); chartMethods(); chartScenarios(ss); renderDistTable();
+  $("distTitle").textContent = `Distributions · ${A().label}`;
+  $("distCap").textContent = `All ${A().orders.length} damage scenario${A().orders.length > 1 ? "s" : ""} × ${K} reconstructions per level. Selected level: ${pct(lv.fraction, 0)}.`;
+}
+$("sub").textContent = `${DATA.dataset}: ${N.toLocaleString()} nodes, ${(DATA.edges.length / 2).toLocaleString()} edges · leakage-free split (train ${DATA.split_sizes.train} / val ${DATA.split_sizes.val} / evaluation pool ${DATA.split_sizes.pool}) · validation AUC: diffusion ${DATA.validation_auc.diffusion}, no diffusion ${DATA.validation_auc.no_diffusion}`;
+$("foot").textContent = `Run ${DATA.run}. Per-reconstruction outcomes recomputed from the run's checkpoints and verified to match the saved counts exactly. Damage removes only pool edges; the model never saw them in training.`;
+$("attack").onchange = e => { st.attack = e.target.value; setupControls(); setupFocus(true); render(); };
+$("level").onchange = e => { st.level = +e.target.value; setupControls(); setupFocus(true); render(); };
+$("view").onchange = e => { st.view = e.target.value; setupControls(); setupFocus(true); render(); };
+$("recon").onchange = e => { st.k = +e.target.value; setupFocus(true); render(); };
+$("focusSel").onchange = e => { st.focus = +e.target.value; render(); };
+document.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => pick(b.dataset.pick));
+setupControls(); setupFocus(false);
+</script>
+</body>
+</html>
