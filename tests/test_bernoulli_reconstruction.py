@@ -18,7 +18,7 @@ from tests.test_edge_recovery_pipeline import graph, tiny_config  # noqa: F401  
 
 @pytest.fixture(scope="module")
 def trained(graph):
-    config = tiny_config()
+    config = tiny_config(recovery={"edge_decision": "bernoulli"})
     split = split_edges(graph.edges, graph.node_count, 0.5, 0.1, 0.4, 40, seed=3)
     models = train_models(graph, split, config, torch.device("cpu"))
     series = make_damage_series(split.pool, split.all_edges, graph.node_count,
