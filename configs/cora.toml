@@ -60,6 +60,11 @@ train_max_drop = 0.4             # damage_aware / edge_reconstruction: per-epoch
 train_t_max = 8                  # timesteps sampled in [0, train_t_max) during training (200 = upstream)
 clip_x0 = true                   # upstream clamps predicted x0 to [-1, 1]
 radial_delta = 1.0               # radial popularity coefficient (paper Eq. 6); upstream code 1, paper experiments 0.4
+# conditional training only (Decision 9): noise the CLEAN train-graph embedding, condition on the damaged one
+edge_loss_weight = 1.0           # weight of the decoder BCE (dropped + kept train edges vs non-edges) added to the MSE
+t_sampling = "per_graph"         # "per_graph" (one t per training graph) | "per_node" (upstream)
+angular_noise = "upstream"       # "upstream": sgn(dir) * eps (paper Eq. 5 / code; statistically isotropic)
+                                 # | "folded": sgn(dir) * |eps| (DDM, paper Eq. C.1; truly direction-restricted)
 
 [community]
 n_clusters = 7                   # hyperbolic K-means on train-graph embeddings
@@ -85,4 +90,7 @@ tau_mode = "val_fpr"             # "fixed" (use tau) | "val_fpr" (per method, ca
 tau = 0.5                        # used when tau_mode = "fixed"
 target_fpr = 0.05                # val_fpr: false-positive rate on validation negatives
 sampler = "one_step"             # "iterative" (t* .. 0 reverse loop, upstream-style) | "one_step" (x0 from x_t*)
+                                 # | "stochastic" (generalised DDIM, fresh geometric noise each step; Decision 9)
+eta = 1.0                        # stochastic only: 0 = deterministic (= iterative), 1 = ancestral-like
+steps = 20                       # stochastic only: network calls from t* to 0 (strided schedule)
 reconstructions = 10             # K per damaged graph

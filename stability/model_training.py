@@ -93,7 +93,10 @@ def build_model_args(graph: GraphData, config: ExperimentConfig, device: torch.d
         denoiser_layers=config.denoiser.layers,
         clip_x0=config.denoiser.clip_x0,
         radial_delta=config.denoiser.radial_delta,
+        angular_noise=config.denoiser.angular_noise,
         recovery_sampler=config.recovery.sampler,
+        recovery_eta=config.recovery.eta,
+        recovery_steps=config.recovery.steps,
     )
     pilot = PilotConfig(
         curvature=model.curvature,
@@ -227,6 +230,9 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     damage_aware        : edge-dropped train graph (+ noise) -> intact train graph (MSE).
     edge_reconstruction : edge-dropped train graph -> one denoising step -> decoder;
                           BCE(dropped train edges) + BCE(kept train edges) + BCE(negatives).
+    conditional         : (Decision 9) noised CLEAN train-graph embedding at t < train_t_max,
+                          conditioned on the edge-dropped train graph -> x0; MSE
+                          + edge_loss_weight * the edge_reconstruction BCE on the prediction.
                           Negatives use the encoder's sampler (never val negatives or
                           control pairs); the encoder and decoder stay frozen.
     """
@@ -239,6 +245,8 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     denoiser = StabilityDiffusion(
         args, dim=args.dim, curvature=config.model.curvature, device=device
     ).to(device)
+    # fail before training if the configured stochastic sampler cannot run at t*
+    denoiser.check_stochastic_range(config.recovery.t_star)
     optimizer = torch.optim.Adam(denoiser.parameters(), lr=den.learning_rate)
     drop_rng = np.random.default_rng([seed, 2])
     negative_rng = np.random.default_rng([seed, 3])
@@ -246,7 +254,7 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     encoder_requires_grad = [p.requires_grad for p in encoder.parameters()]
     for parameter in encoder.parameters():
         parameter.requires_grad_(False)
-    losses, drops = [], []
+    losses, drops, mses = [], [], []
     for epoch in range(den.epochs):
         denoiser.train()
         optimizer.zero_grad()
@@ -261,7 +269,24 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
             damaged_adjacency = normalized_adjacency(graph.node_count, split.train[keep], device)
             with torch.no_grad():
                 damaged_embeddings = encoder.encode(features, damaged_adjacency)[2].detach()
-            if den.training == "damage_aware":
+            if den.training == "conditional":
+                mse, recovered = denoiser.conditional_loss(
+                    train_embeddings, damaged_embeddings, damaged_adjacency,
+                    context.labels, context.centers, den.train_t_max, den.t_sampling,
+                )
+                loss = mse
+                mses.append(float(mse.detach()))
+                if den.edge_loss_weight > 0:
+                    negatives = _edge_tensor(
+                        sample_non_edges(len(split.train), graph.node_count, forbidden, negative_rng), device
+                    )
+                    loss = loss + den.edge_loss_weight * _edge_reconstruction_loss(
+                        encoder, recovered,
+                        dropped=_edge_tensor(split.train[~keep], device),
+                        kept=_edge_tensor(split.train[keep], device),
+                        negatives=negatives,
+                    )
+            elif den.training == "damage_aware":
                 loss = denoiser.restoration_loss(
                     train_embeddings, damaged_embeddings, damaged_adjacency,
                     context.labels, context.centers, den.train_t_max,
@@ -293,7 +318,10 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
         parameter.requires_grad_(False)
     for parameter, flag in zip(encoder.parameters(), encoder_requires_grad):
         parameter.requires_grad_(flag)
-    return denoiser, {"denoiser_loss": losses, "denoiser_drop_fractions": drops}
+    history = {"denoiser_loss": losses, "denoiser_drop_fractions": drops}
+    if mses:
+        history["denoiser_mse"] = mses
+    return denoiser, history
 
 
 def _edge_reconstruction_loss(encoder, embeddings, dropped, kept, negatives):

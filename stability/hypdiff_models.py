@@ -15,7 +15,12 @@ here, as a subclass, so that the diff against upstream is explicit:
       ``"exact"`` inverts ``q_sample`` exactly; ``"upstream"`` calls the original
       upstream method unchanged. See tests/test_predict_noise_from_start.py.
     * ``tran_direction``  vectorised copy of the upstream per-node loop
-      (same result; upstream loops over nodes in Python).
+      (same result; upstream loops over nodes in Python). Option ``angular_noise``:
+      "upstream" = sgn(direction) * eps (paper Eq. 5 and upstream code; NOTE: a sign
+      flip of a symmetric Gaussian, so the noise is still isotropic N(0, I)), or
+      "folded" = sgn(direction) * |eps| (DDM / paper Appendix Eq. C.1, the form under
+      which Theorem 3.2's folded-normal limit holds: noise confined to the community
+      direction's orthant).
     * ``draw_noise`` / ``_denoise_from_tstar`` / ``sample_from_tstar``  new
       project methods for partial-noise recovery from t* < T.
     * ``radial_delta`` (paper's delta, upstream hard-codes 1),
@@ -24,6 +29,13 @@ here, as a subclass, so that the diff against upstream is explicit:
       (edge-reconstruction training) and ``recovery_sampler`` ("iterative" =
       t* .. 0 reverse loop, "one_step" = x0 predicted directly from x_{t*}) — options read
       from ``args``; defaults reproduce the upstream behaviour.
+    * Decision 9 (conditional geometric diffusion): conditional architectures
+      ("conditional_gcn" | "conditional_residual_gcn") receive the standardised damaged
+      embedding as an extra input (``_predict_x0``); ``conditional_loss`` trains on the
+      noised CLEAN train-graph embedding; sampler "stochastic" is a generalised DDIM over
+      HypDiff's marginals with stochasticity ``recovery_eta`` and ``recovery_steps``
+      strided steps, adding FRESH direction-restricted noise at every step
+      (``stochastic_step``). eta = 0 reproduces the "iterative" sampler exactly.
 
     Upstream methods not used by the project (``p_sample``, ``p_sample_loop``,
     ``x_tran``) are inherited unchanged and still assume c = 1.
@@ -45,10 +57,20 @@ from layers.layers import FermiDiracDecoder
 from manifolds.poincare import PoincareBall
 from models.base_models import LPModel
 from models.direction_diffusion import diffusion, gcndec, get_alphas, mlp
-from stability.denoisers import ResidualGCNDenoiser
+import math
+
+from stability.denoisers import (
+    ConditionalGCNDenoiser,
+    ConditionalResidualGCNDenoiser,
+    ResidualGCNDenoiser,
+)
 
 NOISE_FORMULAS = ("exact", "upstream")
-DENOISER_ARCHITECTURES = ("upstream_gcn", "residual_gcn")
+DENOISER_ARCHITECTURES = ("upstream_gcn", "residual_gcn", "conditional_gcn", "conditional_residual_gcn")
+SAMPLERS = ("iterative", "one_step", "stochastic")
+ANGULAR_NOISE = ("upstream", "folded")
+# E|z| for z ~ N(0, 1): mean of HypDiff's direction-restricted noise |z| * sign(direction).
+RESTRICTED_NOISE_MEAN = math.sqrt(2.0 / math.pi)
 FINAL_ACTIVATIONS = ("relu", "leaky_relu")
 
 
@@ -108,8 +130,18 @@ class StabilityDiffusion(diffusion):
         # Project options (defaults = upstream behaviour).
         self.clip_x0 = bool(getattr(args, "clip_x0", True))
         self.sampler = getattr(args, "recovery_sampler", "iterative")
-        if self.sampler not in ("iterative", "one_step"):
-            raise ValueError("recovery_sampler must be 'iterative' or 'one_step'")
+        if self.sampler not in SAMPLERS:
+            raise ValueError(f"recovery_sampler must be one of {SAMPLERS}")
+        self.angular_noise = getattr(args, "angular_noise", "upstream")
+        if self.angular_noise not in ANGULAR_NOISE:
+            raise ValueError(f"angular_noise must be one of {ANGULAR_NOISE}")
+        self.eta = float(getattr(args, "recovery_eta", 0.0))
+        if not 0.0 <= self.eta <= 1.0:
+            raise ValueError("recovery_eta must be in [0, 1]")
+        steps = getattr(args, "recovery_steps", None)
+        self.sampler_steps = None if steps is None else int(steps)
+        if self.sampler_steps is not None and self.sampler_steps < 1:
+            raise ValueError("recovery_steps must be positive")
         self.architecture = getattr(args, "denoiser_architecture", "upstream_gcn")
         if self.architecture not in DENOISER_ARCHITECTURES:
             raise ValueError(f"denoiser_architecture must be one of {DENOISER_ARCHITECTURES}")
@@ -117,6 +149,13 @@ class StabilityDiffusion(diffusion):
             self.gcn = ResidualGCNDenoiser(
                 dim, int(args.denoiser_hidden_dim), int(args.denoiser_layers)
             ).to(device)
+        elif self.architecture == "conditional_gcn":
+            self.gcn = ConditionalGCNDenoiser(dim).to(device)
+        elif self.architecture == "conditional_residual_gcn":
+            self.gcn = ConditionalResidualGCNDenoiser(
+                dim, int(args.denoiser_hidden_dim), int(args.denoiser_layers)
+            ).to(device)
+        self.conditional = bool(getattr(self.gcn, "conditional", False))
 
     # -- documented copies of upstream methods (self.c / device fixes) ------
 
@@ -132,11 +171,12 @@ class StabilityDiffusion(diffusion):
 
     def tran_direction(self, direction_vector, gaussian_point, labels):
         # Vectorised upstream loop: gaussian_point[i] *= sign(direction[labels[i]]),
-        # updated in place like upstream.
+        # updated in place like upstream. "folded": |gaussian_point| * sign (DDM, Eq. C.1).
         signs = torch.sign(self._stack(direction_vector, gaussian_point)[
             self._labels(labels, gaussian_point)
         ])
-        gaussian_point.copy_(gaussian_point * signs)
+        magnitude = gaussian_point.abs() if self.angular_noise == "folded" else gaussian_point
+        gaussian_point.copy_(magnitude * signs)
         return gaussian_point
 
     def cal_u0(self, data):
@@ -163,6 +203,8 @@ class StabilityDiffusion(diffusion):
         )
 
     def forward(self, x, adj, labels, u0, restrict=True, graphset=False):
+        if self.conditional:
+            raise ValueError("generative (upstream) training has no condition; use training='conditional'")
         x = x.to(float)
         h = x
         b, n = h.shape
@@ -235,8 +277,13 @@ class StabilityDiffusion(diffusion):
             # Predict x0 directly from x_{t*} (the network is an x0-predictor); matches
             # the single-step edge-reconstruction training objective.
             batch_t = torch.full((x_t.shape[0],), t_star, device=x_t.device, dtype=torch.long)
-            x0 = self.gcn(x_t, edge_index, batch_t.to(dtype=torch.float32) / self.num_timesteps)
+            x0 = self._predict_x0(x_t, edge_index,
+                                  batch_t.to(dtype=torch.float32) / self.num_timesteps, x_start)
             return x0.clamp(-1.0, 1.0) if self.clip_x0 else x0
+
+        if self.sampler == "stochastic":
+            return self._stochastic_reverse(x_t, x_start, edge_index, direction, labels,
+                                            t_star, generator)
 
         for timestep in range(t_star, -1, -1):
             batch_t = torch.full(
@@ -244,7 +291,7 @@ class StabilityDiffusion(diffusion):
             )
             # Network was trained on t / num_timesteps (see forward).
             normalized_t = batch_t.to(dtype=torch.float32) / self.num_timesteps
-            x0 = self.gcn(x_t, edge_index, normalized_t)
+            x0 = self._predict_x0(x_t, edge_index, normalized_t, x_start)
             if self.clip_x0:  # upstream clip_denoised; x0 is standardised (std 1)
                 x0 = x0.clamp(-1.0, 1.0)
             if timestep == 0:
@@ -290,7 +337,8 @@ class StabilityDiffusion(diffusion):
         direction = torch.stack([self.manifold.logmap0(p, c=self.c) for p in prototypes])
         noise = torch.randn_like(normalized)
         x_t = self.q_sample(normalized, t, direction, noise, labels, None, restrict=True)
-        x0 = self.gcn(x_t, self.edge(damaged_adjacency.coalesce()), t / self.num_timesteps)
+        x0 = self._predict_x0(x_t, self.edge(damaged_adjacency.coalesce()),
+                              t / self.num_timesteps, normalized)
         if self.clip_x0:
             x0 = x0.clamp(-1.0, 1.0)
         recovered_tangent = self.renormal(x0.to(tangent.dtype), tangent)
@@ -319,8 +367,153 @@ class StabilityDiffusion(diffusion):
         t = torch.randint(0, t_max, (x_damaged.shape[0],), device=x_damaged.device).long()
         noise = torch.randn_like(x_damaged)
         x_t = self.q_sample(x_damaged, t, direction, noise, labels, None, restrict=True)
-        prediction = self.gcn(x_t, self.edge(damaged_adjacency.coalesce()), t / self.num_timesteps)
+        prediction = self._predict_x0(x_t, self.edge(damaged_adjacency.coalesce()),
+                                      t / self.num_timesteps, x_damaged)
         return F.mse_loss(prediction, target.to(torch.float32))
+
+    def conditional_loss(self, clean_embeddings, damaged_embeddings, damaged_adjacency,
+                         labels, prototypes, t_max, t_sampling="per_graph"):
+        """Conditional diffusion objective (Decision 9).
+
+        HypDiff's generative objective (noise the CLEAN embedding with the geometric
+        forward process at a random t, predict x0) conditioned on the damaged graph:
+        the network sees the damaged edges (message passing) and, for conditional
+        architectures, the standardised damaged embedding. Both embeddings are taken in
+        the tangent space of each node's community prototype and standardised with the
+        DAMAGED statistics (the only ones available at recovery time).
+
+        Returns (mse, recovered_embeddings): the x0 prediction mapped back to the
+        Poincare ball (clipped like the sampler) for an optional decoder loss.
+        """
+        if t_sampling not in ("per_graph", "per_node"):
+            raise ValueError("t_sampling must be 'per_graph' or 'per_node'")
+        labels = labels.to(device=damaged_embeddings.device, dtype=torch.long)
+        prototypes = prototypes.to(device=damaged_embeddings.device, dtype=damaged_embeddings.dtype)
+        node_prototypes = prototypes[labels]
+        tangent_damaged = self.manifold.logmap(node_prototypes, damaged_embeddings, c=self.c)
+        tangent_clean = self.manifold.logmap(node_prototypes, clean_embeddings, c=self.c)
+        mean, std = torch.mean(tangent_damaged), torch.std(tangent_damaged)
+        condition = (tangent_damaged - mean) / std
+        target = (tangent_clean - mean) / std
+        direction = torch.stack([self.manifold.logmap0(p, c=self.c) for p in prototypes])
+        n = condition.shape[0]
+        if t_sampling == "per_graph":
+            t = torch.randint(0, t_max, (1,), device=condition.device).long().expand(n).clone()
+        else:
+            t = torch.randint(0, t_max, (n,), device=condition.device).long()
+        noise = torch.randn_like(target)
+        x_t = self.q_sample(target, t, direction, noise, labels, None, restrict=True)
+        prediction = self._predict_x0(x_t, self.edge(damaged_adjacency.coalesce()),
+                                      t / self.num_timesteps, condition)
+        mse = F.mse_loss(prediction, target.to(torch.float32))
+        x0 = prediction.clamp(-1.0, 1.0) if self.clip_x0 else prediction
+        recovered = self.manifold.expmap(x0.to(tangent_damaged.dtype) * std + mean, node_prototypes, c=self.c)
+        return mse, recovered
+
+    # -- Decision 9: conditioning and stochastic (generalised DDIM) sampling --
+
+    def _predict_x0(self, x_t, edge_index, normalized_t, condition):
+        if self.conditional:
+            return self.gcn(x_t, edge_index, normalized_t, condition)
+        return self.gcn(x_t, edge_index, normalized_t)
+
+    def signal_coefficient(self, t: int) -> float:
+        """a_t in x_t = a_t x0 + s_t eps (sqrt(abar_t) + radial prior; not monotone in t)."""
+        return float(self.sqrt_alphas_cumprod[t]) + float(self.getpri(torch.tensor([t]))[0, 0])
+
+    def noise_coefficient(self, t: int) -> float:
+        """s_t in x_t = a_t x0 + s_t eps."""
+        return float(self.minus_alphas_cumprod[t])
+
+    def stochastic_schedule(self, t_star: int) -> list[int]:
+        """Descending timesteps t* .. 0 (strided to ``sampler_steps`` network calls)."""
+        if not 0 <= t_star < self.num_timesteps:
+            raise ValueError(f"t_star must be in [0, {self.num_timesteps - 1}]")
+        if self.sampler_steps is None or self.sampler_steps >= t_star + 1:
+            return list(range(t_star, -1, -1))
+        points = torch.linspace(t_star, 0, self.sampler_steps).round().long().tolist()
+        schedule = sorted(set(points), reverse=True)
+        return schedule if schedule[-1] == 0 else schedule + [0]
+
+    def step_variance(self, t: int, t_prev: int) -> float:
+        """s_t^2 - (a_t / a_prev)^2 s_prev^2: must be >= 0 for a valid stochastic step.
+        HypDiff's radial prior makes a_t rise again at large t, where this turns negative."""
+        a_t, a_p = self.signal_coefficient(t), self.signal_coefficient(t_prev)
+        s_t, s_p = self.noise_coefficient(t), self.noise_coefficient(t_prev)
+        return s_t ** 2 - (a_t / a_p) ** 2 * s_p ** 2
+
+    def check_stochastic_range(self, t_star: int) -> None:
+        if self.sampler != "stochastic" or self.eta == 0.0:
+            return
+        schedule = self.stochastic_schedule(t_star)
+        for t, t_prev in zip(schedule[:-1], schedule[1:]):
+            if self.step_variance(t, t_prev) < 0:
+                raise ValueError(
+                    f"stochastic sampler invalid at t={t}->{t_prev} (radial prior makes the signal "
+                    f"coefficient rise): use a smaller t_star (last valid single step: "
+                    f"{self.last_valid_stochastic_t()}) or a smaller radial_delta"
+                )
+
+    def last_valid_stochastic_t(self) -> int:
+        last = 0
+        for t in range(1, self.num_timesteps):
+            if self.step_variance(t, t - 1) < 0:
+                break
+            last = t
+        return last
+
+    def restricted_noise(self, like, direction, labels, generator):
+        """Fresh HypDiff angular noise (``tran_direction``, mode ``angular_noise``)."""
+        return self.tran_direction(direction, self.draw_noise(like, generator), labels)
+
+    def restricted_noise_mean(self, like, direction, labels):
+        """E[noise]: 0 for "upstream" (symmetric), sqrt(2/pi) * sign for "folded"."""
+        if self.angular_noise == "upstream":
+            return torch.zeros_like(like)
+        signs = torch.sign(self._stack(direction, like)[self._labels(labels, like)])
+        return (RESTRICTED_NOISE_MEAN * signs).to(dtype=like.dtype)
+
+    def stochastic_step(self, x_t, x0, t: int, t_prev: int, fresh_noise, noise_mean):
+        """One generalised-DDIM step on HypDiff's marginals x_t = a_t x0 + s_t eps.
+
+        HypDiff's eps is direction-restricted and not zero-mean, so the step works on
+        the centred part u = eps - E[eps]: x_prev = a_prev x0 + s_prev E[eps]
+        + sqrt(s_prev^2 - sigma^2) u_hat + sigma (z - E[eps]), with z fresh restricted
+        noise and sigma = eta (s_prev / s_t) sqrt(s_t^2 - (a_t / a_prev)^2 s_prev^2).
+        This keeps the forward marginal's mean and variance at t_prev (oracle test).
+        eta = 0 gives x_prev = a_prev x0 + s_prev eps_hat (the "iterative" sampler).
+        """
+        a_t, a_p = self.signal_coefficient(t), self.signal_coefficient(t_prev)
+        s_t, s_p = self.noise_coefficient(t), self.noise_coefficient(t_prev)
+        eps_hat = (x_t - a_t * x0) / s_t
+        if self.eta == 0.0:
+            return a_p * x0 + s_p * eps_hat
+        variance = self.step_variance(t, t_prev)
+        if variance < 0:
+            raise ValueError(f"stochastic step {t}->{t_prev} has negative variance")
+        sigma = self.eta * (s_p / s_t) * math.sqrt(variance)
+        u_hat = eps_hat - noise_mean
+        return (a_p * x0 + s_p * noise_mean
+                + math.sqrt(max(s_p ** 2 - sigma ** 2, 0.0)) * u_hat
+                + sigma * (fresh_noise - noise_mean))
+
+    def _stochastic_reverse(self, x_t, condition, edge_index, direction, labels, t_star, generator):
+        self.check_stochastic_range(t_star)
+        schedule = self.stochastic_schedule(t_star)
+        noise_mean = self.restricted_noise_mean(x_t, direction, labels)
+        for index, timestep in enumerate(schedule):
+            batch_t = torch.full((x_t.shape[0],), timestep, device=x_t.device, dtype=torch.long)
+            x0 = self._predict_x0(x_t, edge_index, batch_t.to(torch.float32) / self.num_timesteps,
+                                  condition)
+            if self.clip_x0:
+                x0 = x0.clamp(-1.0, 1.0)
+            if timestep == 0:
+                return x0
+            x0 = x0.to(x_t.dtype)
+            fresh = (self.restricted_noise(x_t, direction, labels, generator)
+                     if self.eta > 0 else None)
+            x_t = self.stochastic_step(x_t, x0, timestep, schedule[index + 1], fresh, noise_mean)
+        raise RuntimeError("stochastic reverse process did not reach t = 0")
 
     def sample_from_tstar(
         self,

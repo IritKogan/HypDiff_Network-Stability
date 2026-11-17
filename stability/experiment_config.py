@@ -16,8 +16,12 @@ ATTACKS = ("random", "targeted_weighted", "targeted_deterministic")
 DEVICES = ("auto", "cpu", "cuda")
 NOISE_FORMULAS = ("exact", "upstream")
 FINAL_ACTIVATIONS = ("relu", "leaky_relu")
-DENOISER_ARCHITECTURES = ("upstream_gcn", "residual_gcn")
-DENOISER_TRAINING = ("generative", "damage_aware", "edge_reconstruction")
+DENOISER_ARCHITECTURES = ("upstream_gcn", "residual_gcn", "conditional_gcn", "conditional_residual_gcn")
+CONDITIONAL_ARCHITECTURES = ("conditional_gcn", "conditional_residual_gcn")
+DENOISER_TRAINING = ("generative", "damage_aware", "edge_reconstruction", "conditional")
+T_SAMPLING = ("per_graph", "per_node")
+ANGULAR_NOISE = ("upstream", "folded")
+SAMPLERS = ("iterative", "one_step", "stochastic")
 TAU_MODES = ("fixed", "val_fpr")
 DIFFUSION_STEPS = 200  # upstream HypDiff num_timesteps (hard-coded upstream)
 
@@ -82,6 +86,9 @@ class DenoiserConfig:
     train_t_max: int
     clip_x0: bool
     radial_delta: float
+    edge_loss_weight: float
+    t_sampling: str
+    angular_noise: str
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,8 @@ class RecoveryConfig:
     tau: float
     target_fpr: float
     sampler: str
+    eta: float
+    steps: int
     reconstructions: int
 
 
@@ -244,6 +253,13 @@ def _validate(config: ExperimentConfig) -> None:
     _require(den.radial_delta >= 0.0, "denoiser.radial_delta must be non-negative")
     _require(0.0 <= den.train_max_drop < 1.0, "denoiser.train_max_drop must be in [0, 1)")
     _require(0 < den.train_t_max <= DIFFUSION_STEPS, f"denoiser.train_t_max must be in (0, {DIFFUSION_STEPS}]")
+    _require(den.edge_loss_weight >= 0.0, "denoiser.edge_loss_weight must be non-negative")
+    _require(den.t_sampling in T_SAMPLING, f"denoiser.t_sampling in {T_SAMPLING}")
+    _require(den.angular_noise in ANGULAR_NOISE, f"denoiser.angular_noise in {ANGULAR_NOISE}")
+    _require(
+        not (den.training == "generative" and den.architecture in CONDITIONAL_ARCHITECTURES),
+        "conditional architectures need a damaged-graph condition: training must not be 'generative'",
+    )
 
     com = config.community
     _require(com.n_clusters >= 2 and com.max_epochs > 0, "community.n_clusters >= 2, max_epochs > 0")
@@ -274,6 +290,8 @@ def _validate(config: ExperimentConfig) -> None:
     _require(0 <= rec.t_star < DIFFUSION_STEPS, f"recovery.t_star must be in [0, {DIFFUSION_STEPS - 1}]")
     _require(0.0 <= rec.tau <= 1.0, "recovery.tau must be in [0, 1]")
     _require(rec.tau_mode in TAU_MODES, f"recovery.tau_mode in {TAU_MODES}")
-    _require(rec.sampler in ("iterative", "one_step"), "recovery.sampler must be 'iterative' or 'one_step'")
+    _require(rec.sampler in SAMPLERS, f"recovery.sampler in {SAMPLERS}")
+    _require(0.0 <= rec.eta <= 1.0, "recovery.eta must be in [0, 1]")
+    _require(rec.steps >= 1, "recovery.steps must be positive")
     _require(0.0 < rec.target_fpr < 1.0, "recovery.target_fpr must be in (0, 1)")
     _require(rec.reconstructions > 0, "recovery.reconstructions must be positive")
