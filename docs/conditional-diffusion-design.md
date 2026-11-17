@@ -332,3 +332,28 @@ Decision 8 denoiser, K = 10, R = 2639 unknown edges; 96 s on CPU).
   not carry information about which edges are recoverable. The probabilistic content of the measure comes
   from the random damage scenarios (resampling), with the hyperbolic model as the (best) recovery engine.
   This matches the advisors' resampling-based stability framework (Volkovich et al., 2011).
+
+## 16. Which edges are stable? Analysis of the pairwise run (2026-11-17)
+
+scripts/analyze_edge_stability.py on artifacts/runs/cora_edge_recovery_20261117T164522Z
+(outputs: artifacts/analysis/cora_pairwise/, not in git; advisor dashboard "יציבות קשתות ב-Cora" in claude.ai).
+Per-edge analyses use expected p_e, random attack, 20%.
+
+- Classical network-level measures vs p_e on the same damaged graphs: global efficiency falls to 0.90 / 0.79 /
+  0.67 of the original at 10 / 20 / 30% random damage (LCC 0.92 -> 0.80), while mean p_e stays 0.870 / 0.866 /
+  0.861. The network loses connectivity, but the missing structure stays inferable: p_e measures a different
+  kind of stability than connectivity robustness.
+- Edge-level drivers (mean expected p_e): same model community 0.963 vs 0.691; same class 0.883 vs 0.799;
+  bridges 0.656 vs 0.891; min degree Q1 0.649 -> Q5 0.923; common neighbours 0 -> 0.798, >= 2 -> 0.964;
+  edge betweenness top quintiles ~0.81-0.82 vs ~0.91 bottom. Spearman: same_community 0.74, common neighbours
+  0.47, Jaccard 0.42, min degree 0.33, same class 0.25, degree product 0.20, bridge -0.30, betweenness -0.34.
+- Explained variance (5-fold CV R^2, gradient boosting): structural classical measures 0.19; model community
+  alone 0.43; both 0.61 -> ~40% of p_e is not explained by these measures.
+- Criticality vs recoverability: of the 10% least recoverable edges only 12.7% are in the top-10% betweenness;
+  p_e flags different weak edges than betweenness does.
+- Dynamics (paired, random): from 10% to 30% damage 16.7% of cross-class edges lose > 0.05 of expected p_e vs
+  8.6% of same-class edges.
+- Attack independence: per-edge expected p_e under random vs targeted_weighted at 20%: rank correlation 0.983,
+  mean difference +0.0002 -> recoverability is a property of the edge; attacks differ in which edges they remove.
+- Caveat: the model community comes from the model's own embedding (k = 7, NMI with classes 0.40), so its
+  strong link to p_e is partly by construction.
