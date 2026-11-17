@@ -158,3 +158,37 @@ k_t = a_t^2 v / (a_t^2 v + s_t^2 Var[eps]), v = Var(x_0 - c) measured on trainin
 it forces the model to use x_t at small t and lets the sampler's fresh noise propagate,
 while F learns where the damaged graph is uncertain. Test: oracle/prior sampler reproduces
 N(c, v); then re-run the pilot and check (b).
+
+## 11. Preconditioned pilot + the geometry of the noise (2026-11-17)
+
+Preconditioned run (db216ee; artifacts/sweeps/conditional_precond): residual network, clip off,
+angular_noise {upstream, folded} x edge_loss_weight {0, 1}. v estimated on training damage = 0.10.
+- The sampler now really samples: the K reconstructions differ by ~0.21-0.24 (standardised tangent
+  units, close to sqrt(v)); with F = 0 the unit test confirms draws from N(c, v).
+- But edge probabilities barely move: per-pair probability std across K 0.013-0.015; p_e in (0, 1)
+  for 5-11% of validation edges; stratified AUC 0.46-0.56; eta still has no visible effect.
+- Quality fell to the no-diffusion level (hit 0.38-0.41, AUC 0.83): without the clamp the output is
+  essentially the damaged embedding plus noise (|mean x0_hat - c| = 0.08 vs true |x0 - c| ~ 0.25).
+
+Why (scripts/diagnose_noise_geometry.py): with the SAME total noise energy added to the train-graph
+embeddings,
+
+| noise shape | prob std across K | p_e in (0, 1) | hit@5%FP |
+|---|---|---|---|
+| isotropic, 128 dims | 0.011 | 0.04 | 0.378 |
+| fixed 8-dim subspace | 0.017 | 0.07 | 0.369 |
+| radial direction of each node only | 0.080 | 0.26 | 0.335 |
+
+In a 128-dimensional latent space, independent isotropic noise mostly adds the same constant to all
+pairwise distances (absorbed by tau); its pair-specific part shrinks like 1/sqrt(dim)
+(concentration of measure). Uncertainty in the embeddings only becomes uncertainty about EDGES when it
+is low-dimensional and structured, e.g. along each node's radial (popularity) direction, which is
+exactly HypDiff's geometric decomposition. So the geometric part of the noise is not decoration: it
+decides whether the diffusion can produce a meaningful p_e at all.
+
+Implication for the design (proposal, needs approval): let the stochastic part of the conditional
+diffusion live in HypDiff's geometric coordinates of each node (radial = popularity, angular =
+direction relative to its community prototype; a few dimensions per node), with the remaining
+coordinates taken deterministically from the conditional mean. Then check (a)-(c) again. Random
+radial noise alone is NOT the answer (hit drops to 0.335, and the spread is not learned); the model
+must learn which nodes are uncertain and how much.
