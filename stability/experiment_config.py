@@ -21,6 +21,7 @@ CONDITIONAL_ARCHITECTURES = ("conditional_gcn", "conditional_residual_gcn")
 DENOISER_TRAINING = ("generative", "damage_aware", "edge_reconstruction", "conditional")
 T_SAMPLING = ("per_graph", "per_node")
 ANGULAR_NOISE = ("upstream", "folded")
+PARAMETERIZATIONS = ("direct", "preconditioned")
 SAMPLERS = ("iterative", "one_step", "stochastic")
 TAU_MODES = ("fixed", "val_fpr")
 DIFFUSION_STEPS = 200  # upstream HypDiff num_timesteps (hard-coded upstream)
@@ -89,6 +90,8 @@ class DenoiserConfig:
     edge_loss_weight: float
     t_sampling: str
     angular_noise: str
+    parameterization: str
+    prior_variance: float
 
 
 @dataclass(frozen=True)
@@ -256,6 +259,14 @@ def _validate(config: ExperimentConfig) -> None:
     _require(den.edge_loss_weight >= 0.0, "denoiser.edge_loss_weight must be non-negative")
     _require(den.t_sampling in T_SAMPLING, f"denoiser.t_sampling in {T_SAMPLING}")
     _require(den.angular_noise in ANGULAR_NOISE, f"denoiser.angular_noise in {ANGULAR_NOISE}")
+    _require(den.parameterization in PARAMETERIZATIONS, f"denoiser.parameterization in {PARAMETERIZATIONS}")
+    _require(den.prior_variance >= 0.0, "denoiser.prior_variance must be non-negative (0 = estimate)")
+    _require(
+        den.parameterization == "direct"
+        or (den.training == "conditional" and den.architecture == "conditional_residual_gcn"),
+        "denoiser.parameterization 'preconditioned' needs training 'conditional' and "
+        "architecture 'conditional_residual_gcn'",
+    )
     _require(
         not (den.training == "generative" and den.architecture in CONDITIONAL_ARCHITECTURES),
         "conditional architectures need a damaged-graph condition: training must not be 'generative'",

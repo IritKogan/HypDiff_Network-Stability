@@ -275,3 +275,89 @@ def test_conditional_loss_t_sampling(graph, monkeypatch, t_sampling, distinct):
     assert torch.isfinite(mse) and recovered.shape == clean.shape
     unique = torch.unique(seen[0]).numel()
     assert unique == 1 if distinct == 1 else unique > 1
+
+
+# ---------------------------------------------------------------- preconditioned parameterization
+
+
+def preconditioned(graph, v=0.09, **denoiser):
+    settings = {"architecture": "conditional_residual_gcn", "training": "conditional",
+                "parameterization": "preconditioned", "prior_variance": v, "clip_x0": False}
+    settings.update(denoiser)
+    return make_denoiser(graph, denoiser=settings, recovery={"sampler": "stochastic", "eta": 1.0, "steps": 200})
+
+
+@pytest.mark.parametrize("angular_noise", ["upstream", "folded"])
+def test_untrained_preconditioned_model_is_the_exact_gaussian_posterior_mean(graph, angular_noise):
+    """F = 0 at initialisation: x0_hat = E[x0 | x_t, c] under x0 ~ N(c, v). Check by Monte Carlo:
+    its error equals the posterior variance v (1 - k) and no other linear rule does better."""
+    v = 0.09
+    denoiser = preconditioned(graph, v=v, angular_noise=angular_noise)
+    n, dim = 20000, 4
+    direction, labels = geometry(n, dim)
+    gen = torch.Generator().manual_seed(7)
+    c = torch.randn(n, dim, generator=gen, dtype=torch.float64)
+    x0 = c + math.sqrt(v) * torch.randn(n, dim, generator=gen, dtype=torch.float64)
+    edges = torch.zeros(2, 0, dtype=torch.long)
+    mean = denoiser.restricted_noise_mean(c, direction, labels)
+    for t in (2, 30, 100, 150):
+        eps = denoiser.restricted_noise(c, direction, labels, gen)
+        x_t = denoiser.signal_coefficient(t) * x0 + denoiser.noise_coefficient(t) * eps
+        normalized_t = torch.full((n,), t / 200.0)
+        with torch.no_grad():
+            x0_hat = denoiser._predict_x0(x_t, edges, normalized_t, c, mean).double()
+        k, out, _ = denoiser._precondition(x_t, normalized_t, c, mean)
+        assert ((x0_hat - x0) ** 2).mean().item() == pytest.approx(float(out[0] ** 2), rel=0.05)
+        if t == 2:   # small noise: the prediction follows x_t, not the condition
+            assert float(k[0]) > 0.9
+
+
+def test_preconditioned_stochastic_sampler_draws_from_the_prior_posterior(graph):
+    """With F = 0 and eta = 1 the reverse process samples x0 ~ N(c, v) (starting at large t*):
+    the K samples genuinely differ, by the prior's standard deviation."""
+    v = 0.09
+    denoiser = preconditioned(graph, v=v)
+    n = graph.node_count
+    condition = torch.randn(n, 4, generator=torch.Generator().manual_seed(3), dtype=torch.float64)
+    with torch.no_grad():
+        samples = torch.stack([_run(denoiser, graph, seed=s, t_star=150, condition=condition) for s in range(40)])
+    spread = samples.std(dim=0).mean().item()
+    assert spread == pytest.approx(math.sqrt(v), rel=0.25)
+    assert (samples.mean(dim=0) - condition).abs().mean().item() < 0.1
+
+
+def test_preconditioned_config_rules():
+    raw = raw_config()
+    raw["denoiser"].update(training="conditional", architecture="conditional_gcn", parameterization="preconditioned")
+    with pytest.raises(ValueError, match="preconditioned"):
+        config_from_dict(raw)
+    raw = raw_config()
+    raw["denoiser"].update(prior_variance=-0.1)
+    with pytest.raises(ValueError, match="prior_variance"):
+        config_from_dict(raw)
+    raw = raw_config()
+    raw["denoiser"].update(parameterization="edm")
+    with pytest.raises(ValueError, match="parameterization"):
+        config_from_dict(raw)
+
+
+def test_preconditioned_training_estimates_v_on_train_edges_only(graph, monkeypatch):
+    from stability.edge_split import EdgeSplit
+
+    config = tiny_config(
+        denoiser={"training": "conditional", "architecture": "conditional_residual_gcn",
+                  "parameterization": "preconditioned", "prior_variance": 0.0, "train_t_max": 150,
+                  "epochs": 5, "clip_x0": False},
+        recovery={"sampler": "stochastic", "eta": 1.0, "t_star": 30, "steps": 5},
+    )
+    split = split_edges(graph.edges, graph.node_count, 0.5, 0.1, 0.4, 40, seed=3)
+    forbidden = split.forbidden_negative_keys()
+    first = train_models(graph, split, config, torch.device("cpu"))
+    v = first.history["prior_variance"]
+    assert v > 0 and float(first.denoiser.prior_variance) == pytest.approx(v)
+    assert "prior_variance" in first.denoiser.state_dict()
+    monkeypatch.setattr(EdgeSplit, "forbidden_negative_keys", lambda self: forbidden)
+    second = train_models(graph, replace(split, pool=split.pool[:0]), config, torch.device("cpu"))
+    assert second.history["prior_variance"] == v
+    for name, tensor in first.denoiser.state_dict().items():
+        assert torch.equal(tensor, second.denoiser.state_dict()[name]), name

@@ -64,6 +64,9 @@ radial_delta = 1.0               # radial popularity coefficient (paper Eq. 6); 
 edge_loss_weight = 1.0           # weight of the decoder BCE (dropped + kept train edges vs non-edges) added to the MSE
 t_sampling = "per_graph"         # "per_graph" (one t per training graph) | "per_node" (upstream)
 angular_noise = "upstream"       # "upstream": sgn(dir) * eps (paper Eq. 5 / code; statistically isotropic)
+parameterization = "direct"      # "direct" (network predicts x0) | "preconditioned" (conditional_residual_gcn only:
+                                 #   x0 = c + k_t (y - c) + out_t F, Gaussian prior N(c, v); forces use of x_t)
+prior_variance = 0.0             # preconditioned: v = Var(x0 - c); 0 = estimate on training damage (train edges only)
                                  # | "folded": sgn(dir) * |eps| (DDM, paper Eq. C.1; truly direction-restricted)
 
 [community]

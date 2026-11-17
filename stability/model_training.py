@@ -94,6 +94,8 @@ def build_model_args(graph: GraphData, config: ExperimentConfig, device: torch.d
         clip_x0=config.denoiser.clip_x0,
         radial_delta=config.denoiser.radial_delta,
         angular_noise=config.denoiser.angular_noise,
+        denoiser_parameterization=config.denoiser.parameterization,
+        prior_variance=config.denoiser.prior_variance,
         recovery_sampler=config.recovery.sampler,
         recovery_eta=config.recovery.eta,
         recovery_steps=config.recovery.steps,
@@ -247,6 +249,11 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     ).to(device)
     # fail before training if the configured stochastic sampler cannot run at t*
     denoiser.check_stochastic_range(config.recovery.t_star)
+    prior_variance = None
+    if den.parameterization == "preconditioned":
+        prior_variance = den.prior_variance or estimate_prior_variance(
+            graph, split, config, device, encoder, train_embeddings, context)
+        denoiser.prior_variance.fill_(prior_variance)
     optimizer = torch.optim.Adam(denoiser.parameters(), lr=den.learning_rate)
     drop_rng = np.random.default_rng([seed, 2])
     negative_rng = np.random.default_rng([seed, 3])
@@ -321,7 +328,35 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     history = {"denoiser_loss": losses, "denoiser_drop_fractions": drops}
     if mses:
         history["denoiser_mse"] = mses
+    if prior_variance is not None:
+        history["prior_variance"] = float(prior_variance)
     return denoiser, history
+
+
+def estimate_prior_variance(graph, split, config, device, encoder, train_embeddings, context,
+                            draws: int = 16) -> float:
+    """v = mean Var(x0 - c) for the preconditioned model: x0 / c = standardised tangent
+    embeddings of the intact / edge-dropped TRAIN graph (same standardisation as
+    conditional_loss). Uses train edges only and its own RNG stream."""
+    from manifolds.poincare import PoincareBall
+
+    manifold = PoincareBall()
+    rng = np.random.default_rng([config.model.seed, 4])
+    features = graph.features.to(device)
+    labels = context.labels.to(device)
+    prototypes = context.centers.to(device=device, dtype=train_embeddings.dtype)[labels]
+    curvature = config.model.curvature
+    values = []
+    with torch.no_grad():
+        tangent_clean = manifold.logmap(prototypes, train_embeddings, c=curvature)
+        for _ in range(draws):
+            fraction = float(rng.uniform(0.0, config.denoiser.train_max_drop))
+            keep = rng.random(len(split.train)) >= fraction
+            damaged = encoder.encode(features, normalized_adjacency(graph.node_count, split.train[keep], device))[2]
+            tangent_damaged = manifold.logmap(prototypes, damaged, c=curvature)
+            std = torch.std(tangent_damaged)
+            values.append(float(torch.mean(((tangent_clean - tangent_damaged) / std) ** 2)))
+    return float(np.mean(values))
 
 
 def _edge_reconstruction_loss(encoder, embeddings, dropped, kept, negatives):

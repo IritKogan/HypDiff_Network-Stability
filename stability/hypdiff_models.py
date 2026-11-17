@@ -36,6 +36,9 @@ here, as a subclass, so that the diff against upstream is explicit:
       HypDiff's marginals with stochasticity ``recovery_eta`` and ``recovery_steps``
       strided steps, adding FRESH direction-restricted noise at every step
       (``stochastic_step``). eta = 0 reproduces the "iterative" sampler exactly.
+      ``denoiser_parameterization`` = "preconditioned": x0_hat = c + k_t (y - c) + out_t F
+      (Gaussian prior x0 ~ N(c, v) centred on the damaged embedding; y = de-noised x_t),
+      so the prediction must follow x_t where it is informative (see ``_precondition``).
 
     Upstream methods not used by the project (``p_sample``, ``p_sample_loop``,
     ``x_tran``) are inherited unchanged and still assume c = 1.
@@ -69,6 +72,7 @@ NOISE_FORMULAS = ("exact", "upstream")
 DENOISER_ARCHITECTURES = ("upstream_gcn", "residual_gcn", "conditional_gcn", "conditional_residual_gcn")
 SAMPLERS = ("iterative", "one_step", "stochastic")
 ANGULAR_NOISE = ("upstream", "folded")
+PARAMETERIZATIONS = ("direct", "preconditioned")
 # E|z| for z ~ N(0, 1): mean of HypDiff's direction-restricted noise |z| * sign(direction).
 RESTRICTED_NOISE_MEAN = math.sqrt(2.0 / math.pi)
 FINAL_ACTIVATIONS = ("relu", "leaky_relu")
@@ -135,6 +139,9 @@ class StabilityDiffusion(diffusion):
         self.angular_noise = getattr(args, "angular_noise", "upstream")
         if self.angular_noise not in ANGULAR_NOISE:
             raise ValueError(f"angular_noise must be one of {ANGULAR_NOISE}")
+        self.parameterization = getattr(args, "denoiser_parameterization", "direct")
+        if self.parameterization not in PARAMETERIZATIONS:
+            raise ValueError(f"denoiser_parameterization must be one of {PARAMETERIZATIONS}")
         self.eta = float(getattr(args, "recovery_eta", 0.0))
         if not 0.0 <= self.eta <= 1.0:
             raise ValueError("recovery_eta must be in [0, 1]")
@@ -156,6 +163,11 @@ class StabilityDiffusion(diffusion):
                 dim, int(args.denoiser_hidden_dim), int(args.denoiser_layers)
             ).to(device)
         self.conditional = bool(getattr(self.gcn, "conditional", False))
+        if self.parameterization == "preconditioned":
+            if self.architecture != "conditional_residual_gcn":
+                raise ValueError("preconditioned parameterization needs architecture 'conditional_residual_gcn'")
+            # v = Var(x0 - c) of the Gaussian prior; set from training damage (model_training)
+            self.register_buffer("prior_variance", torch.tensor(float(getattr(args, "prior_variance", 0.0) or 0.0)))
 
     # -- documented copies of upstream methods (self.c / device fixes) ------
 
@@ -273,12 +285,14 @@ class StabilityDiffusion(diffusion):
             restrict=True,
         )
 
+        noise_mean = self.restricted_noise_mean(x_start, direction, labels)
         if self.sampler == "one_step":
             # Predict x0 directly from x_{t*} (the network is an x0-predictor); matches
             # the single-step edge-reconstruction training objective.
             batch_t = torch.full((x_t.shape[0],), t_star, device=x_t.device, dtype=torch.long)
             x0 = self._predict_x0(x_t, edge_index,
-                                  batch_t.to(dtype=torch.float32) / self.num_timesteps, x_start)
+                                  batch_t.to(dtype=torch.float32) / self.num_timesteps, x_start,
+                                  noise_mean)
             return x0.clamp(-1.0, 1.0) if self.clip_x0 else x0
 
         if self.sampler == "stochastic":
@@ -291,7 +305,7 @@ class StabilityDiffusion(diffusion):
             )
             # Network was trained on t / num_timesteps (see forward).
             normalized_t = batch_t.to(dtype=torch.float32) / self.num_timesteps
-            x0 = self._predict_x0(x_t, edge_index, normalized_t, x_start)
+            x0 = self._predict_x0(x_t, edge_index, normalized_t, x_start, noise_mean)
             if self.clip_x0:  # upstream clip_denoised; x0 is standardised (std 1)
                 x0 = x0.clamp(-1.0, 1.0)
             if timestep == 0:
@@ -403,19 +417,61 @@ class StabilityDiffusion(diffusion):
             t = torch.randint(0, t_max, (n,), device=condition.device).long()
         noise = torch.randn_like(target)
         x_t = self.q_sample(target, t, direction, noise, labels, None, restrict=True)
+        noise_mean = self.restricted_noise_mean(target, direction, labels)
+        normalized_t = t / self.num_timesteps
         prediction = self._predict_x0(x_t, self.edge(damaged_adjacency.coalesce()),
-                                      t / self.num_timesteps, condition)
-        mse = F.mse_loss(prediction, target.to(torch.float32))
+                                      normalized_t, condition, noise_mean)
+        if self.parameterization == "preconditioned":
+            # EDM-style weighting: the error in units of the prior posterior std, so every
+            # t contributes equally (the network output F has unit scale)
+            _, out, _ = self._precondition(x_t, normalized_t, condition, noise_mean)
+            mse = torch.mean(((prediction - target.to(torch.float32)) / out.to(torch.float32)) ** 2)
+        else:
+            mse = F.mse_loss(prediction, target.to(torch.float32))
         x0 = prediction.clamp(-1.0, 1.0) if self.clip_x0 else prediction
         recovered = self.manifold.expmap(x0.to(tangent_damaged.dtype) * std + mean, node_prototypes, c=self.c)
         return mse, recovered
 
     # -- Decision 9: conditioning and stochastic (generalised DDIM) sampling --
 
-    def _predict_x0(self, x_t, edge_index, normalized_t, condition):
+    def _predict_x0(self, x_t, edge_index, normalized_t, condition, noise_mean=None):
+        if self.parameterization == "preconditioned":
+            if noise_mean is None:
+                raise ValueError("preconditioned prediction needs the noise mean")
+            k, out, network_input = self._precondition(x_t, normalized_t, condition, noise_mean)
+            correction = self.gcn(network_input, edge_index, normalized_t, condition) - condition.to(torch.float32)
+            prior_mean = condition + k * ((x_t - self._coefficients(normalized_t)[1] * noise_mean)
+                                          / self._coefficients(normalized_t)[0] - condition)
+            return (prior_mean + out * correction.to(prior_mean.dtype)).to(torch.float32)
         if self.conditional:
             return self.gcn(x_t, edge_index, normalized_t, condition)
         return self.gcn(x_t, edge_index, normalized_t)
+
+    def noise_variance(self) -> float:
+        """Per-coordinate variance of the angular noise: 1 ("upstream"), 1 - 2/pi ("folded")."""
+        return 1.0 if self.angular_noise == "upstream" else 1.0 - RESTRICTED_NOISE_MEAN ** 2
+
+    def _coefficients(self, normalized_t):
+        """(a_t, s_t) per node, shape (n, 1), from t / num_timesteps."""
+        t = torch.round(normalized_t.to(torch.float64) * self.num_timesteps).long().clamp(0, self.num_timesteps - 1)
+        a = self.sqrt_alphas_cumprod.to(t.device)[t].reshape(-1, 1) + self.getpri(t.to(torch.float64))
+        s = self.minus_alphas_cumprod.to(t.device)[t].reshape(-1, 1)
+        return a.to(torch.float64), s.to(torch.float64)
+
+    def _precondition(self, x_t, normalized_t, condition, noise_mean):
+        """Gaussian prior x0 ~ N(c, v), observation y = (x_t - s_t E[eps]) / a_t = x0 + noise
+        of variance s_t^2 q / a_t^2. Posterior mean c + k (y - c), k = a^2 v / (a^2 v + s^2 q),
+        posterior std out = sqrt(v (1 - k)). Network input: the innovation x_t - s_t E[eps] - a_t c
+        scaled to unit variance."""
+        v = float(self.prior_variance)
+        if v <= 0:
+            raise ValueError("prior_variance must be set (> 0) before using the preconditioned model")
+        a, s = self._coefficients(normalized_t)
+        q = self.noise_variance()
+        k = a ** 2 * v / (a ** 2 * v + s ** 2 * q)
+        out = torch.sqrt(v * (1.0 - k)).clamp(min=1e-4)
+        innovation = (x_t - s * noise_mean - a * condition) / torch.sqrt(a ** 2 * v + s ** 2 * q)
+        return k, out, innovation
 
     def signal_coefficient(self, t: int) -> float:
         """a_t in x_t = a_t x0 + s_t eps (sqrt(abar_t) + radial prior; not monotone in t)."""
@@ -504,7 +560,7 @@ class StabilityDiffusion(diffusion):
         for index, timestep in enumerate(schedule):
             batch_t = torch.full((x_t.shape[0],), timestep, device=x_t.device, dtype=torch.long)
             x0 = self._predict_x0(x_t, edge_index, batch_t.to(torch.float32) / self.num_timesteps,
-                                  condition)
+                                  condition, noise_mean)
             if self.clip_x0:
                 x0 = x0.clamp(-1.0, 1.0)
             if timestep == 0:
