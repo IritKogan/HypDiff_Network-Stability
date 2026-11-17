@@ -192,3 +192,34 @@ direction relative to its community prototype; a few dimensions per node), with 
 coordinates taken deterministically from the conditional mean. Then check (a)-(c) again. Random
 radial noise alone is NOT the answer (hit drops to 0.335, and the spread is not learned); the model
 must learn which nodes are uncertain and how much.
+
+## 12. Geometric pilot and the role of the threshold (2026-11-17)
+
+Geometric parameterization (baefaf5; artifacts/sweeps/conditional_geometric; edge_loss_weight 0 / 1):
+- hit 0.38-0.41, AUC 0.83 (mean mu barely improves on the damaged embedding);
+- p_e in (0, 1) for 5-15% of validation edges, stratified AUC 0.49-0.57: still not informative.
+- The noise-geometry diagnostic compared EQUAL ENERGY; the learned uncertainty along the geometric
+  directions is small (std ~0.3 standardised units, vs ~3.4 in the radial diagnostic). Given the
+  damaged graph, the encoder-space posterior is genuinely narrow: three model families (direct,
+  preconditioned, geometric) agree that the K embedding samples carry no edge information beyond
+  their mean.
+
+Where the graded probability actually is (scripts/diagnose_probability_calibration.py, pilot-1
+conditional residual model, t* = 30, eta = 1, K = 10):
+
+| score (no threshold) | AUC | ECE balanced | ECE at real base rate | mean prob. on non-edges |
+|---|---|---|---|---|
+| no_diffusion decoder probability | 0.825 | 0.128 | 0.182 | 0.182 |
+| clamp_only decoder probability | 0.857 | 0.051 | 0.281 | 0.281 |
+| conditional diffusion, mean over K | 0.857 | 0.228 | 0.075 | 0.076 |
+
+Validation edges under the diffusion mean probability: 27% below 0.1, 12% 0.1-0.3, 9% 0.3-0.5,
+12% 0.5-0.7, 41% 0.7-0.9: graded, not bimodal.
+
+Interpretation: the near-binary p_e comes from the hard threshold tau applied to every sample, not from
+the absence of uncertainty. HypDiff's Fermi-Dirac decoder defines P(A_ij = 1); a reconstruction drawn
+from the generative model would sample each edge from that probability (Bernoulli), and then
+p_e = frequency over K reconstructions -> E_samples[P(A_ij = 1)], which is graded. The conditional
+diffusion contributes a better base-rate calibration (non-edge probability 0.076 vs 0.18 / 0.28), but
+absolute calibration is still far off (true base rate ~0.001) and would need a leakage-free
+calibration step on validation. This changes the p_e definition (Decision 1) -> advisor decision.
