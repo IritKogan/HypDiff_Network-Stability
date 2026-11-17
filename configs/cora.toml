@@ -66,7 +66,9 @@ t_sampling = "per_graph"         # "per_graph" (one t per training graph) | "per
 angular_noise = "upstream"       # "upstream": sgn(dir) * eps (paper Eq. 5 / code; statistically isotropic)
 parameterization = "direct"      # "direct" (network predicts x0) | "preconditioned" (conditional_residual_gcn only:
                                  #   x0 = c + k_t (y - c) + out_t F, Gaussian prior N(c, v); forces use of x_t)
-prior_variance = 0.0             # preconditioned: v = Var(x0 - c); 0 = estimate on training damage (train edges only)
+                                 # | "geometric" (conditional_residual_gcn only: deterministic mean mu(c) + stochastic
+                                 #   part in 2 geometric coordinates per node: community offset, popularity)
+prior_variance = 0.0             # preconditioned / geometric (initial prior): v = Var(x0 - c); 0 = estimate on training damage
                                  # | "folded": sgn(dir) * |eps| (DDM, paper Eq. C.1; truly direction-restricted)
 
 [community]

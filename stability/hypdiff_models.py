@@ -39,6 +39,12 @@ here, as a subclass, so that the diff against upstream is explicit:
       ``denoiser_parameterization`` = "preconditioned": x0_hat = c + k_t (y - c) + out_t F
       (Gaussian prior x0 ~ N(c, v) centred on the damaged embedding; y = de-noised x_t),
       so the prediction must follow x_t where it is informative (see ``_precondition``).
+      "geometric": all coordinates from a deterministic conditional mean mu(c) (``self.gcn``)
+      plus a stochastic part living ONLY in two geometric coordinates per node — offset from
+      the community prototype and popularity (radial direction of the prototype) — sampled by
+      a preconditioned 2-D diffusion with a learned per-node Gaussian prior
+      (``geometric_loss`` / ``_geometric_sample``). Isotropic noise over the 128-dim latent
+      barely changes edges (scripts/diagnose_noise_geometry.py); geometric noise does.
 
     Upstream methods not used by the project (``p_sample``, ``p_sample_loop``,
     ``x_tran``) are inherited unchanged and still assume c = 1.
@@ -65,6 +71,8 @@ import math
 from stability.denoisers import (
     ConditionalGCNDenoiser,
     ConditionalResidualGCNDenoiser,
+    GeometricDenoiserNet,
+    GeometricPriorNet,
     ResidualGCNDenoiser,
 )
 
@@ -72,7 +80,7 @@ NOISE_FORMULAS = ("exact", "upstream")
 DENOISER_ARCHITECTURES = ("upstream_gcn", "residual_gcn", "conditional_gcn", "conditional_residual_gcn")
 SAMPLERS = ("iterative", "one_step", "stochastic")
 ANGULAR_NOISE = ("upstream", "folded")
-PARAMETERIZATIONS = ("direct", "preconditioned")
+PARAMETERIZATIONS = ("direct", "preconditioned", "geometric")
 # E|z| for z ~ N(0, 1): mean of HypDiff's direction-restricted noise |z| * sign(direction).
 RESTRICTED_NOISE_MEAN = math.sqrt(2.0 / math.pi)
 FINAL_ACTIVATIONS = ("relu", "leaky_relu")
@@ -163,11 +171,16 @@ class StabilityDiffusion(diffusion):
                 dim, int(args.denoiser_hidden_dim), int(args.denoiser_layers)
             ).to(device)
         self.conditional = bool(getattr(self.gcn, "conditional", False))
-        if self.parameterization == "preconditioned":
+        if self.parameterization in ("preconditioned", "geometric"):
             if self.architecture != "conditional_residual_gcn":
-                raise ValueError("preconditioned parameterization needs architecture 'conditional_residual_gcn'")
+                raise ValueError(f"{self.parameterization} parameterization needs architecture 'conditional_residual_gcn'")
             # v = Var(x0 - c) of the Gaussian prior; set from training damage (model_training)
             self.register_buffer("prior_variance", torch.tensor(float(getattr(args, "prior_variance", 0.0) or 0.0)))
+        if self.parameterization == "geometric":
+            hidden, layers = int(args.denoiser_hidden_dim), int(args.denoiser_layers)
+            init = float(self.prior_variance) if float(self.prior_variance) > 0 else 1.0
+            self.geo_prior = GeometricPriorNet(dim, hidden, layers, init).to(device)
+            self.geo_denoiser = GeometricDenoiserNet(dim, hidden, layers).to(device)
 
     # -- documented copies of upstream methods (self.c / device fixes) ------
 
@@ -415,6 +428,9 @@ class StabilityDiffusion(diffusion):
             t = torch.randint(0, t_max, (1,), device=condition.device).long().expand(n).clone()
         else:
             t = torch.randint(0, t_max, (n,), device=condition.device).long()
+        if self.parameterization == "geometric":
+            return self.geometric_loss(target, condition, self.edge(damaged_adjacency.coalesce()), t,
+                                       mean, std, direction, labels, node_prototypes)
         noise = torch.randn_like(target)
         x_t = self.q_sample(target, t, direction, noise, labels, None, restrict=True)
         noise_mean = self.restricted_noise_mean(target, direction, labels)
@@ -604,16 +620,107 @@ class StabilityDiffusion(diffusion):
         direction = torch.stack(
             [self.manifold.logmap0(prototype, c=self.c) for prototype in prototypes]
         )
-        recovered_tangent = self._denoise_from_tstar(
-            tangent_normalized,
-            self.edge(damaged_adjacency.coalesce()),
-            direction,
-            labels,
-            t_star,
-            generator,
-        )
+        if self.parameterization == "geometric":
+            recovered_tangent = self._geometric_sample(
+                tangent_normalized, self.edge(damaged_adjacency.coalesce()), direction, labels,
+                t_star, generator, torch.mean(tangent), torch.std(tangent),
+            )
+        else:
+            recovered_tangent = self._denoise_from_tstar(
+                tangent_normalized,
+                self.edge(damaged_adjacency.coalesce()),
+                direction,
+                labels,
+                t_star,
+                generator,
+            )
         recovered_tangent = self.renormal(recovered_tangent, tangent)
         return self.manifold.expmap(recovered_tangent, node_prototypes, c=self.c)
+
+
+    # -- geometric parameterization (stochasticity only in geometric coordinates) ---------
+
+    def initialise_geometric_prior(self, variance: float) -> None:
+        """Start the learned per-node prior at N(0, variance) (variance from training damage)."""
+        with torch.no_grad():
+            self.prior_variance.fill_(float(variance))
+            bias = self.geo_prior.output.bias
+            bias.zero_()
+            bias[bias.shape[0] // 2:] = math.log(float(variance))
+
+    def geometric_directions(self, mu, mean, std, direction, labels):
+        """Two orthonormal directions per node (standardised tangent space at its prototype):
+        d1 = the node's offset from its community prototype (moving along it changes how close
+        the node is to its community), d2 = the prototype's radial direction from the origin
+        (popularity), Gram-Schmidt against d1. Returns (nodes, dim, 2)."""
+        eps = 1e-8
+        offset = mu.to(torch.float64) * std + mean
+        d1 = offset / offset.norm(dim=1, keepdim=True).clamp(min=eps)
+        radial = self._stack(direction, mu).to(torch.float64)[self._labels(labels, mu)]
+        d2 = radial - (radial * d1).sum(dim=1, keepdim=True) * d1
+        d2 = d2 / d2.norm(dim=1, keepdim=True).clamp(min=eps)
+        return torch.stack((d1, d2), dim=2)
+
+    def _geometric_parts(self, condition, edge_index, mean, std, direction, labels):
+        zero_t = torch.zeros(condition.shape[0], device=condition.device)
+        mu = self.gcn(condition, edge_index, zero_t, condition).to(torch.float64)
+        basis = self.geometric_directions(mu.detach(), mean, std, direction, labels)
+        prior_mean, prior_log_variance = self.geo_prior(condition, edge_index)
+        return mu, basis, prior_mean.to(torch.float64), prior_log_variance.to(torch.float64)
+
+    def _geometric_predict(self, g_t, normalized_t, condition, edge_index, prior_mean, prior_variance):
+        """Preconditioned prediction of the geometric coefficients (per-node prior N(m, v)):
+        g_hat = m + k (g_t / a - m) + out F, k = a^2 v / (a^2 v + s^2), out = sqrt(v (1 - k))."""
+        a, s = self._coefficients(normalized_t)
+        k = a ** 2 * prior_variance / (a ** 2 * prior_variance + s ** 2)
+        out = torch.sqrt(prior_variance * (1.0 - k)).clamp(min=1e-5)
+        innovation = (g_t - a * prior_mean) / torch.sqrt(a ** 2 * prior_variance + s ** 2)
+        correction = self.geo_denoiser(innovation, condition, edge_index, normalized_t).to(torch.float64)
+        return prior_mean + k * (g_t / a - prior_mean) + out * correction, out
+
+    def geometric_loss(self, target, condition, edge_index, t, mean, std, direction, labels,
+                       node_prototypes):
+        """Loss = MSE(mu, x0) [all coordinates, deterministic]
+        + Gaussian NLL of the geometric coefficients g = D^T (x0 - mu) under the learned prior
+        + preconditioned denoising loss of the 2-D diffusion over g (prior detached).
+        Returns (loss, embeddings of mu) — the decoder loss in model_training acts on mu."""
+        mu, basis, prior_mean, prior_log_variance = self._geometric_parts(
+            condition, edge_index, mean, std, direction, labels)
+        target = target.to(torch.float64)
+        mse = torch.mean((mu - target) ** 2)
+        g = torch.einsum("nd,ndk->nk", target - mu.detach(), basis)
+        prior_variance = torch.exp(prior_log_variance)
+        nll = 0.5 * torch.mean(prior_log_variance + (g - prior_mean) ** 2 / prior_variance)
+        normalized_t = t / self.num_timesteps
+        a, s = self._coefficients(normalized_t)
+        g_t = a * g + s * torch.randn_like(g)
+        g_hat, out = self._geometric_predict(g_t, normalized_t, condition, edge_index,
+                                             prior_mean.detach(), prior_variance.detach())
+        denoise = torch.mean(((g_hat - g) / out) ** 2)
+        recovered = self.manifold.expmap(mu * std + mean, node_prototypes, c=self.c)
+        return mse + nll + denoise, recovered
+
+    def _geometric_sample(self, condition, edge_index, direction, labels, t_star, generator, mean, std):
+        """x0 = mu + D g, with g drawn by the stochastic sampler over the 2-D geometric
+        coefficients (start: a_{t*} m + s_{t*} eps; fresh Gaussian noise at every step)."""
+        self.check_stochastic_range(t_star)
+        mu, basis, prior_mean, prior_log_variance = self._geometric_parts(
+            condition, edge_index, mean, std, direction, labels)
+        prior_variance = torch.exp(prior_log_variance)
+        schedule = self.stochastic_schedule(t_star)
+        zeros = torch.zeros_like(prior_mean)
+        g_t = (self.signal_coefficient(t_star) * prior_mean
+               + self.noise_coefficient(t_star) * self.draw_noise(prior_mean, generator))
+        for index, timestep in enumerate(schedule):
+            normalized_t = torch.full((g_t.shape[0],), timestep / self.num_timesteps, device=g_t.device)
+            g_hat, _ = self._geometric_predict(g_t, normalized_t, condition, edge_index,
+                                               prior_mean, prior_variance)
+            if timestep == 0:
+                break
+            fresh = self.draw_noise(g_t, generator) if self.eta > 0 else None
+            g_t = self.stochastic_step(g_t, g_hat, timestep, schedule[index + 1], fresh, zeros)
+        x0 = mu + torch.einsum("ndk,nk->nd", basis, g_hat)
+        return x0.clamp(-1.0, 1.0) if self.clip_x0 else x0
 
 
 def _leaky_relu(x):

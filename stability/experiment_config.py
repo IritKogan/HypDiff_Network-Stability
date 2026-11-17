@@ -21,7 +21,7 @@ CONDITIONAL_ARCHITECTURES = ("conditional_gcn", "conditional_residual_gcn")
 DENOISER_TRAINING = ("generative", "damage_aware", "edge_reconstruction", "conditional")
 T_SAMPLING = ("per_graph", "per_node")
 ANGULAR_NOISE = ("upstream", "folded")
-PARAMETERIZATIONS = ("direct", "preconditioned")
+PARAMETERIZATIONS = ("direct", "preconditioned", "geometric")
 SAMPLERS = ("iterative", "one_step", "stochastic")
 TAU_MODES = ("fixed", "val_fpr")
 DIFFUSION_STEPS = 200  # upstream HypDiff num_timesteps (hard-coded upstream)
@@ -264,7 +264,7 @@ def _validate(config: ExperimentConfig) -> None:
     _require(
         den.parameterization == "direct"
         or (den.training == "conditional" and den.architecture == "conditional_residual_gcn"),
-        "denoiser.parameterization 'preconditioned' needs training 'conditional' and "
+        "denoiser.parameterization 'preconditioned' / 'geometric' needs training 'conditional' and "
         "architecture 'conditional_residual_gcn'",
     )
     _require(

@@ -361,3 +361,88 @@ def test_preconditioned_training_estimates_v_on_train_edges_only(graph, monkeypa
     assert second.history["prior_variance"] == v
     for name, tensor in first.denoiser.state_dict().items():
         assert torch.equal(tensor, second.denoiser.state_dict()[name]), name
+
+
+# ---------------------------------------------------------------- geometric parameterization
+
+
+def geometric(graph, v=0.09, **recovery):
+    settings = {"sampler": "stochastic", "eta": 1.0, "steps": 200}
+    settings.update(recovery)
+    denoiser = make_denoiser(graph, denoiser={"architecture": "conditional_residual_gcn", "training": "conditional",
+                                              "parameterization": "geometric", "prior_variance": v,
+                                              "clip_x0": False}, recovery=settings)
+    denoiser.initialise_geometric_prior(v)
+    return denoiser
+
+
+def test_geometric_directions_are_orthonormal_and_follow_offset_and_popularity(graph):
+    denoiser = geometric(graph)
+    n, dim = 200, 4
+    direction, labels = geometry(n, dim)
+    mu = torch.randn(n, dim, generator=torch.Generator().manual_seed(1), dtype=torch.float64)
+    basis = denoiser.geometric_directions(mu, 0.0, 1.0, direction, labels)
+    gram = torch.einsum("ndk,ndl->nkl", basis, basis)
+    assert torch.allclose(gram, torch.eye(2, dtype=torch.float64).expand(n, 2, 2), atol=1e-8)
+    assert torch.allclose(basis[:, :, 0], mu / mu.norm(dim=1, keepdim=True))
+    radial = direction[labels]
+    in_span = torch.einsum("ndk,nd->nk", basis, radial)
+    assert torch.allclose(in_span.norm(dim=1), radial.norm(dim=1))     # radial lies in span(d1, d2)
+
+
+def test_geometric_samples_vary_only_in_two_directions_with_node_specific_spread(graph, monkeypatch):
+    """F = 0 and a fixed prior: g ~ N(m_i, v_i) per node, so the K samples differ only inside
+    span(d1, d2) and nodes with a larger prior variance spread more."""
+    denoiser = geometric(graph)
+    n = graph.node_count
+    variances = torch.where(torch.arange(n) % 2 == 0, 0.01, 0.25).to(torch.float32)
+    monkeypatch.setattr(denoiser.geo_prior, "forward",
+                        lambda c, e: (torch.zeros(n, 2), torch.log(variances)[:, None].expand(n, 2)))
+    condition = torch.randn(n, 4, generator=torch.Generator().manual_seed(3), dtype=torch.float64)
+    edges = torch.as_tensor(graph.edges.T)
+    direction, labels = geometry(n, 4, seed=4)
+    with torch.no_grad():
+        samples = torch.stack([
+            denoiser._geometric_sample(condition, edges, direction, labels, 150,
+                                       torch.Generator().manual_seed(s), 0.0, 1.0)
+            for s in range(60)])
+        mu, basis, _, _ = denoiser._geometric_parts(condition, edges, 0.0, 1.0, direction, labels)
+    deviation = samples - mu
+    outside = deviation - torch.einsum("ndk,snk->snd", basis, torch.einsum("snd,ndk->snk", deviation, basis))
+    assert outside.abs().max().item() < 1e-8
+    spread = torch.einsum("snd,ndk->snk", deviation, basis).std(dim=0).mean(dim=1)
+    assert spread[0::2].mean().item() == pytest.approx(0.1, rel=0.25)
+    assert spread[1::2].mean().item() == pytest.approx(0.5, rel=0.25)
+
+
+def test_geometric_sampler_is_reproducible_per_seed(graph):
+    denoiser = geometric(graph)
+    n = graph.node_count
+    condition = torch.randn(n, 4, generator=torch.Generator().manual_seed(3), dtype=torch.float64)
+    edges = torch.as_tensor(graph.edges.T)
+    direction, labels = geometry(n, 4, seed=4)
+    run = lambda seed: denoiser._geometric_sample(condition, edges, direction, labels, 60,
+                                                  torch.Generator().manual_seed(seed), 0.0, 1.0)
+    with torch.no_grad():
+        assert torch.equal(run(1), run(1)) and not torch.allclose(run(1), run(2))
+
+
+def test_geometric_training_on_train_edges_only_and_reduces_loss(graph, monkeypatch):
+    from stability.edge_split import EdgeSplit
+
+    config = tiny_config(
+        denoiser={"training": "conditional", "architecture": "conditional_residual_gcn",
+                  "parameterization": "geometric", "prior_variance": 0.0, "train_t_max": 150,
+                  "epochs": 60, "clip_x0": False},
+        recovery={"sampler": "stochastic", "eta": 1.0, "t_star": 30, "steps": 5},
+    )
+    split = split_edges(graph.edges, graph.node_count, 0.5, 0.1, 0.4, 40, seed=3)
+    forbidden = split.forbidden_negative_keys()
+    first = train_models(graph, split, config, torch.device("cpu"))
+    losses = first.history["denoiser_loss"]
+    assert np.isfinite(losses).all() and np.mean(losses[-15:]) < np.mean(losses[:15])
+    assert first.history["prior_variance"] > 0
+    monkeypatch.setattr(EdgeSplit, "forbidden_negative_keys", lambda self: forbidden)
+    second = train_models(graph, replace(split, pool=split.pool[:0]), config, torch.device("cpu"))
+    for name, tensor in first.denoiser.state_dict().items():
+        assert torch.equal(tensor, second.denoiser.state_dict()[name]), name

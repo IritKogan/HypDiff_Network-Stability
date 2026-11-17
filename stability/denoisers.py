@@ -100,3 +100,53 @@ class ConditionalResidualGCNDenoiser(nn.Module):
         for norm, conv in zip(self.norms, self.convs):
             h = h + F.gelu(conv(norm(h), edge_index))
         return condition + self.output(h)
+
+
+GEOMETRIC_COORDINATES = 2   # per node: community offset (distance to its prototype), popularity (radial)
+
+
+class GeometricPriorNet(nn.Module):
+    """Per-node Gaussian prior over the geometric coefficients, from the damaged graph:
+    returns (mean, log_variance), each (nodes, 2). Starts at mean 0, variance ``init_variance``."""
+
+    def __init__(self, dim: int, hidden_dim: int, layers: int, init_variance: float):
+        super().__init__()
+        if init_variance <= 0:
+            raise ValueError("init_variance must be positive")
+        self.input = nn.Linear(dim, hidden_dim)
+        self.norms = nn.ModuleList(nn.LayerNorm(hidden_dim) for _ in range(layers))
+        self.convs = nn.ModuleList(GCNConv(hidden_dim, hidden_dim) for _ in range(layers))
+        self.output = nn.Linear(hidden_dim, 2 * GEOMETRIC_COORDINATES)
+        nn.init.zeros_(self.output.weight)
+        with torch.no_grad():
+            self.output.bias.zero_()
+            self.output.bias[GEOMETRIC_COORDINATES:] = float(torch.log(torch.tensor(init_variance)))
+
+    def forward(self, condition, edge_index):
+        h = self.input(condition.to(torch.float32))
+        for norm, conv in zip(self.norms, self.convs):
+            h = h + F.gelu(conv(norm(h), edge_index))
+        out = self.output(h)
+        return out[:, :GEOMETRIC_COORDINATES], out[:, GEOMETRIC_COORDINATES:].clamp(-12.0, 4.0)
+
+
+class GeometricDenoiserNet(nn.Module):
+    """Correction F(innovation, condition, A, t) for the preconditioned 2-D diffusion over the
+    geometric coefficients. Output layer zero-initialised (F = 0: exact Gaussian posterior)."""
+
+    def __init__(self, dim: int, hidden_dim: int, layers: int):
+        super().__init__()
+        self.input = nn.Linear(dim + GEOMETRIC_COORDINATES, hidden_dim)
+        self.time = nn.Sequential(nn.Linear(1, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, hidden_dim))
+        self.norms = nn.ModuleList(nn.LayerNorm(hidden_dim) for _ in range(layers))
+        self.convs = nn.ModuleList(GCNConv(hidden_dim, hidden_dim) for _ in range(layers))
+        self.output = nn.Linear(hidden_dim, GEOMETRIC_COORDINATES)
+        nn.init.zeros_(self.output.weight)
+        nn.init.zeros_(self.output.bias)
+
+    def forward(self, innovation, condition, edge_index, t):
+        h = self.input(torch.cat((innovation.to(torch.float32), condition.to(torch.float32)), dim=1))
+        h = h + self.time(t.to(torch.float32).reshape(-1, 1))
+        for norm, conv in zip(self.norms, self.convs):
+            h = h + F.gelu(conv(norm(h), edge_index))
+        return self.output(h)

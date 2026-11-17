@@ -235,6 +235,9 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     conditional         : (Decision 9) noised CLEAN train-graph embedding at t < train_t_max,
                           conditioned on the edge-dropped train graph -> x0; MSE
                           + edge_loss_weight * the edge_reconstruction BCE on the prediction.
+                          parameterization "geometric": the core loss is MSE(mu) + prior NLL
+                          + 2-D denoising loss (history key "denoiser_mse" holds this core
+                          loss) and the decoder BCE acts on the deterministic mean mu.
                           Negatives use the encoder's sampler (never val negatives or
                           control pairs); the encoder and decoder stay frozen.
     """
@@ -250,10 +253,12 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     # fail before training if the configured stochastic sampler cannot run at t*
     denoiser.check_stochastic_range(config.recovery.t_star)
     prior_variance = None
-    if den.parameterization == "preconditioned":
+    if den.parameterization in ("preconditioned", "geometric"):
         prior_variance = den.prior_variance or estimate_prior_variance(
             graph, split, config, device, encoder, train_embeddings, context)
         denoiser.prior_variance.fill_(prior_variance)
+        if den.parameterization == "geometric":
+            denoiser.initialise_geometric_prior(prior_variance)
     optimizer = torch.optim.Adam(denoiser.parameters(), lr=den.learning_rate)
     drop_rng = np.random.default_rng([seed, 2])
     negative_rng = np.random.default_rng([seed, 3])
