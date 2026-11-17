@@ -23,7 +23,7 @@ T_SAMPLING = ("per_graph", "per_node")
 ANGULAR_NOISE = ("upstream", "folded")
 PARAMETERIZATIONS = ("direct", "preconditioned", "geometric")
 SAMPLERS = ("iterative", "one_step", "stochastic")
-EDGE_DECISIONS = ("threshold", "bernoulli")
+EDGE_DECISIONS = ("threshold", "bernoulli", "pairwise")
 TAU_MODES = ("fixed", "val_fpr")
 DIFFUSION_STEPS = 200  # upstream HypDiff num_timesteps (hard-coded upstream)
 

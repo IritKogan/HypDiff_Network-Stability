@@ -48,6 +48,7 @@ from stability.validation_recovery import validation_recovery
 
 METHOD_CODES = {"diffusion": 0, "no_diffusion": 1, "clamp_only": 2}
 BERNOULLI_STREAM = 10  # SeedSequence tag separating edge draws from recovery noise
+PAIRWISE_STREAM = 11   # SeedSequence tag for the reference-pair draws (edge_decision "pairwise")
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -128,16 +129,40 @@ def run_recoveries(
     Uniforms come from SeedSequence([seed, BERNOULLI_STREAM, method, series, level, k]) over
     ALL pool / control pairs, so draws are shared across attacks (common random numbers).
     Deterministic methods (no_diffusion, clamp_only) then also get K draws per damaged graph.
+
+    edge_decision "pairwise" (Decision 10, chosen 2026-11-17): relative recoverability. In each
+    reconstruction a removed edge "reappears" if its decoded probability is strictly higher than that
+    of a reference pair drawn uniformly from the control pairs (true non-edges, never used in training)
+    of the SAME reconstruction; a control pair is compared with another control pair (never itself),
+    so control frequencies are ~0.5 by construction. Base-rate and threshold free. Reference draws:
+    SeedSequence([seed, PAIRWISE_STREAM, method, series, level, k]) (common random numbers).
+    The expected value per draw (no draw noise) is the share of control pairs scored strictly lower.
     """
     rec = config.recovery
     bernoulli = rec.edge_decision == "bernoulli"
+    pairwise = rec.edge_decision == "pairwise"
     if bernoulli and not calibrators:
         raise ValueError("edge_decision 'bernoulli' needs calibrators from validation_recovery")
-    draws = rec.reconstructions if bernoulli else 1
+    if pairwise and len(split.control_pairs) < 2:
+        raise ValueError("edge_decision 'pairwise' needs at least two control pairs")
+    draws = rec.reconstructions if (bernoulli or pairwise) else 1
+    control_count = len(split.control_pairs)
+    control_range = np.arange(control_count)
     n = graph.node_count
     non_edges = n * (n - 1) // 2 - len(split.all_edges)
 
     def decide(method, p_removed, p_control, pool_index, s, level, k):
+        if pairwise:
+            rng = np.random.default_rng(np.random.SeedSequence(
+                [rec.seed, PAIRWISE_STREAM, METHOD_CODES[method], s, level, k]))
+            reference_pool = rng.integers(0, control_count, size=len(split.pool))[pool_index]
+            reference_control = rng.integers(0, control_count - 1, size=control_count)
+            reference_control = reference_control + (reference_control >= control_range)   # skip itself
+            ordered = np.sort(p_control)
+            share_removed = np.searchsorted(ordered, p_removed, side="left") / control_count
+            share_control = np.searchsorted(ordered, p_control, side="left") / (control_count - 1)
+            return (p_removed > p_control[reference_pool], p_control > p_control[reference_control],
+                    share_removed, share_control)
         if not bernoulli:
             return p_removed >= taus[method], p_control >= taus[method], None, None
         prevalence = len(pool_index) / (len(pool_index) + non_edges)
@@ -171,9 +196,10 @@ def run_recoveries(
         clamp_only = np.zeros(shape, dtype=np.int16)
         clamp_only_probability = np.zeros(shape, dtype=np.float32)
         control_clamp_only = np.zeros(control_shape, dtype=np.int16)
-        # Decision 10: sums of calibrated probabilities (expected frequency, no draw noise)
-        calibrated = {m: np.zeros(shape, dtype=np.float32) for m in METHOD_CODES}
-        control_calibrated = {m: np.zeros(control_shape, dtype=np.float32) for m in METHOD_CODES}
+        # Decision 10: expected decision per draw summed over draws (no draw noise):
+        # bernoulli -> calibrated probability; pairwise -> share of control pairs scored lower
+        expected = {m: np.zeros(shape, dtype=np.float32) for m in METHOD_CODES}
+        control_expected = {m: np.zeros(control_shape, dtype=np.float32) for m in METHOD_CODES}
         control_clamp_only_probability = np.zeros(control_shape, dtype=np.float32)
         for item in items:
             s = item.series_index
@@ -196,9 +222,9 @@ def run_recoveries(
                                                             pool_index, s, level, k)
                         no_diffusion[level, s, pool_index] += hit
                         control_no_diffusion[level, s] += control_hit
-                    if bernoulli:
-                        calibrated["no_diffusion"][level, s, pool_index] = q_r * draws
-                        control_calibrated["no_diffusion"][level, s] = q_c * draws
+                    if bernoulli or pairwise:
+                        expected["no_diffusion"][level, s, pool_index] = q_r * draws
+                        control_expected["no_diffusion"][level, s] = q_c * draws
                     shrunk = models.denoiser.shrink_to_prototype(embeddings, labels, centers)
                     p_removed = _decode(models.encoder, shrunk, removed_pairs)
                     p_control = _decode(models.encoder, shrunk, control)
@@ -209,9 +235,9 @@ def run_recoveries(
                                                             pool_index, s, level, k)
                         clamp_only[level, s, pool_index] += hit
                         control_clamp_only[level, s] += control_hit
-                    if bernoulli:
-                        calibrated["clamp_only"][level, s, pool_index] = q_r * draws
-                        control_calibrated["clamp_only"][level, s] = q_c * draws
+                    if bernoulli or pairwise:
+                        expected["clamp_only"][level, s, pool_index] = q_r * draws
+                        control_expected["clamp_only"][level, s] = q_c * draws
                     for k in range(rec.reconstructions):
                         generator = torch.Generator(device=device)
                         generator.manual_seed(recovery_seed(rec.seed, s, k))
@@ -231,9 +257,9 @@ def run_recoveries(
                         recovered_probability[level, s, pool_index] += p_removed
                         control_hits[level, s] += control_hit
                         control_probability_sum[level, s] += p_control
-                        if bernoulli:
-                            calibrated["diffusion"][level, s, pool_index] += q_r
-                            control_calibrated["diffusion"][level, s] += q_c
+                        if bernoulli or pairwise:
+                            expected["diffusion"][level, s, pool_index] += q_r
+                            control_expected["diffusion"][level, s] += q_c
                 removed[level, s, pool_index] = True
             if log:
                 print(f"[recovery] {attack} series {s + 1}/{len(items)} "
@@ -253,8 +279,8 @@ def run_recoveries(
             "control_clamp_only": control_clamp_only,
             "control_clamp_only_probability": control_clamp_only_probability,
             "deterministic_draws": np.asarray(draws),
-            **{f"{m}_calibrated_sum": calibrated[m] for m in METHOD_CODES},
-            **{f"control_{m}_calibrated_sum": control_calibrated[m] for m in METHOD_CODES},
+            **{f"{m}_expected_sum": expected[m] for m in METHOD_CODES},
+            **{f"control_{m}_expected_sum": control_expected[m] for m in METHOD_CODES},
         }
     return results
 
@@ -292,10 +318,10 @@ def summarize(
             p_no_diffusion = np.where(n_e > 0, arrays["no_diffusion"].sum(axis=1) / (n_e * draws), np.nan)
         p_control = control_probability(arrays["control_hits"], K)
         p_control_no_diffusion = control_probability(arrays["control_no_diffusion"], draws)
-        bernoulli = config.recovery.edge_decision == "bernoulli"
+        drawn = config.recovery.edge_decision in ("bernoulli", "pairwise")
         with np.errstate(invalid="ignore", divide="ignore"):
-            expected_p_e = (np.where(n_e > 0, arrays["diffusion_calibrated_sum"].sum(axis=1) / (n_e * K), np.nan)
-                            if bernoulli else None)
+            expected_p_e = (np.where(n_e > 0, arrays["diffusion_expected_sum"].sum(axis=1) / (n_e * K), np.nan)
+                            if drawn else None)
         series_count = arrays["removed"].shape[1]
         with np.errstate(invalid="ignore", divide="ignore"):
             score_e = np.where(n_e > 0, arrays["recovered_probability_sum"].sum(axis=1) / (n_e * K), np.nan)
@@ -332,7 +358,7 @@ def summarize(
                 "p_e_vs_control": distance(p_e[level], p_control[level]),
                 "p_e_vs_no_diffusion": distance(p_e[level], p_no_diffusion[level]),
             }
-            if bernoulli:
+            if drawn:
                 entry["expected_p_e"] = describe(expected_p_e[level])
             if pool_same is not None:
                 entry["p_e_same_class"] = describe(p_e[level][pool_same])
@@ -557,6 +583,9 @@ def run_experiment(
             "p_e = r_e / (n_e * K) over independent cumulative series (Decision 1, 6).",
             "edge_decision 'bernoulli' (Decision 10): each reconstruction draws each pair with the calibrated, "
             "prior-shifted probability; expected_p_e = mean calibrated probability (no draw noise).",
+            "edge_decision 'pairwise' (Decision 10): a pair reappears when it scores above a random control "
+            "pair of the same reconstruction; control ~0.5 by construction; expected_p_e = share of control "
+            "pairs scored lower.",
             "Thresholds per method from validation (tau_mode); AUC uses mean probabilities (threshold-free).",
             "Levels are nested within a series: between-level distances are descriptive only.",
             "Recovery noise seeds are shared across attacks and levels (common random numbers).",

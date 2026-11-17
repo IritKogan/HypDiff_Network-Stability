@@ -53,7 +53,7 @@ def test_bernoulli_frequency_follows_the_probability(graph, trained, monkeypatch
             assert counts.max() <= K and close(counts), key
             assert np.all(arrays[key][~removed] == 0), key
         assert close(arrays["control_hits"])
-        assert np.allclose(arrays["diffusion_calibrated_sum"][removed], 0.3 * K, atol=1e-4)
+        assert np.allclose(arrays["diffusion_expected_sum"][removed], 0.3 * K, atol=1e-4)
 
 
 def test_bernoulli_draws_are_shared_across_attacks(graph, trained, monkeypatch):
