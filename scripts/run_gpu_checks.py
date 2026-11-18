@@ -3,14 +3,16 @@
 Runs, in order (configs/gpu_checks.toml, [run].stages):
   env        versions, GPU name, CUDA check                          -> env.json
   tests      full pytest suite                                       -> logs/tests.log
-  smoke      short GPU run of both programs (a few minutes)          -> smoke/
-  experiment full Cora run, scripts/run_experiment.py                -> runs/<run name>/
-  ensemble   validation diagnostic, K members (Decision 11)          -> ensemble/bootstrap_ensemble.json
+  smoke      short GPU run of the experiment (a few minutes)          -> smoke/
+  experiment full Cora run, scripts/run_experiment.py: single model AND
+             the K-model ensemble, paired (Decision 11)              -> runs/<run name>/
+  ensemble   (optional, not in the default stages) validation-only
+             ensemble diagnostic                                     -> ensemble/bootstrap_ensemble.json
   pack       zip of the whole output directory, to send back         -> <out>.zip
 
 Every stage logs to <out>/logs/<stage>.log and leaves <out>/stage_<name>.done when it finishes.
-Re-running with the same --out skips finished stages (the ensemble stage also resumes per member),
-so an interrupted run can simply be started again.
+Re-running with the same --out skips finished stages; the experiment resumes inside its run directory
+(trained models are loaded, not retrained), so an interrupted run can simply be started again.
 
 Setup on the GPU machine (once):
     git clone --branch phase-b-work https://github.com/IritKogan/HypDiff_Network-Stability
@@ -52,7 +54,7 @@ def load_plan(path: Path) -> dict[str, Any]:
     """Read and validate configs/gpu_checks.toml."""
     plan = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     run = plan.get("run", {})
-    for key in ("base_config", "output_root", "device", "stages"):
+    for key in ("base_config", "output_root", "device", "stages", "run_name"):
         if key not in run:
             raise ValueError(f"[run].{key} missing in {path}")
     unknown = [s for s in run["stages"] if s not in STAGES]
@@ -66,9 +68,6 @@ def load_plan(path: Path) -> dict[str, Any]:
             raise ValueError(f"[ensemble].{key} missing in {path}")
     if int(ensemble["members"]) < 2:
         raise ValueError("[ensemble].members must be >= 2")
-    smoke = plan.get("smoke", {})
-    if "ensemble_members" not in smoke:
-        raise ValueError(f"[smoke].ensemble_members missing in {path}")
     return plan
 
 
@@ -108,8 +107,7 @@ def dump_toml(raw: dict[str, Any]) -> str:
 
 
 def smoke_config(base: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
-    overrides = {k: v for k, v in plan["smoke"].items() if k != "ensemble_members"}
-    raw = apply_overrides(base, overrides)
+    raw = apply_overrides(base, plan["smoke"])
     raw["run"]["name"] = f"{base['run']['name']}_smoke"
     return raw
 
@@ -131,11 +129,10 @@ def stage_commands(plan: dict[str, Any], out: Path, python: str = sys.executable
         "tests": [[python, "-m", "pytest", "-q", "-p", "no:warnings"]],
         "smoke": [
             [python, "scripts/run_experiment.py", "--config", smoke_toml, "--device", device,
-             "--output-root", str(out / "smoke" / "runs"), "--log-every", "10"],
-            ensemble(smoke_toml, int(plan["smoke"]["ensemble_members"]), out / "smoke" / "ensemble"),
+             "--run-dir", str(out / "smoke" / "run"), "--resume", "--log-every", "10"],
         ],
         "experiment": [[python, "scripts/run_experiment.py", "--config", base, "--device", device,
-                        "--output-root", str(out / "runs")]],
+                        "--run-dir", str(out / "runs" / run["run_name"]), "--resume"]],
         "ensemble": [ensemble(base, int(ens["members"]), out / "ensemble")],
     }
 

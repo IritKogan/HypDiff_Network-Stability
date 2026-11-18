@@ -59,3 +59,37 @@ pool edges, p_e arithmetic, and a reproducible end-to-end run.
 `checkpoints/`, `training_history.json`, `recovery_counts.npz` (raw
 removed/recovered arrays per attack, level, series, edge), `edge_recovery.csv`,
 `control_recovery.csv`, `summary.json`, `figures/`.
+
+## Ensemble reconstructions (Decision 11, 2026-11-18)
+
+`recovery.reconstruction_sources = ["noise", "ensemble"]` runs two reconstruction sources in one run,
+paired: same split, damage series, noise seeds (`recovery_seed(seed, series, k)`) and pairwise reference
+draws (`SeedSequence([seed, 11, method, series, level, k])`).
+
+- `noise`: one model (config seeds), K diffusion noise draws (as before). Files without suffix.
+- `ensemble`: K = `recovery.reconstructions` models; reconstruction k of every damaged graph goes through
+  model k (its encoder, community context and denoiser) with noise draw k, for diffusion, no_diffusion and
+  clamp_only. Files with suffix `_ensemble`; `summary["ensemble"]`; `ensemble_members.json`.
+- Models (`stability/ensemble_training.py`): `[ensemble] resample_mode = "seed_only"` -> all train edges,
+  seeds from `member_seed` (stability/bootstrap_ensemble.py); model 1 = the noise model (shared, not
+  retrained). Every model is trained on TRAIN edges only; with subsample / bootstrap the held-out train
+  edges stay forbidden negatives. Pool, control and validation pairs are never used.
+- Checkpoints: model 1 in `checkpoints/`, model k+1 in `checkpoints/member_XX/` (encoder, denoiser,
+  community context, training_history.json with the curves, member.json with seeds / edges / training
+  seconds, validation_recovery.json, `done` marker written last).
+- Resume: `run_experiment.py --run-dir DIR --resume` continues DIR if its config.json equals the given
+  config; finished models are loaded, unfinished ones retrained; recoveries are recomputed (identical,
+  tested). A finished run (summary.json present) is returned unchanged.
+- Ensemble requires `edge_decision = "pairwise"` (bernoulli / threshold calibrate one model).
+
+Per-reconstruction outputs in `recovery_counts*.npz` (keys `<attack>__<name>`), used by the method
+comparison and the Streamlit GUI:
+
+| name | shape | meaning |
+|---|---|---|
+| `recovered_by_reconstruction`, `no_diffusion_by_reconstruction`, `clamp_only_by_reconstruction` | (levels, series, K, pool) bool | edge reappeared in reconstruction k (sums over k to the counts) |
+| `<method>_expected_by_reconstruction` | (levels, series, K, pool) float16 | share of control pairs scored lower (no reference-draw noise) |
+| `<method>_probability_by_reconstruction_sum` | (levels, K, pool) float32 | decoded probability in reconstruction k, summed over series |
+| `control_<method>_probability_by_reconstruction_sum` | (levels, K, control) float32 | same for control pairs |
+
+For the noise source the deterministic methods have identical values for every k (one model).

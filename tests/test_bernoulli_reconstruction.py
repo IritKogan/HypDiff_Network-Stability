@@ -18,7 +18,7 @@ from tests.test_edge_recovery_pipeline import graph, tiny_config  # noqa: F401  
 
 @pytest.fixture(scope="module")
 def trained(graph):
-    config = tiny_config(recovery={"edge_decision": "bernoulli"})
+    config = tiny_config(recovery={"edge_decision": "bernoulli", "reconstruction_sources": ["noise"]})
     split = split_edges(graph.edges, graph.node_count, 0.5, 0.1, 0.4, 40, seed=3)
     models = train_models(graph, split, config, torch.device("cpu"))
     series = make_damage_series(split.pool, split.all_edges, graph.node_count,
@@ -91,7 +91,7 @@ def test_validation_fits_base_rate_calibrators(graph, trained):
 
 @pytest.mark.parametrize("decision", ["bernoulli", "threshold"])
 def test_end_to_end_both_edge_decisions(graph, tmp_path, decision):
-    config = tiny_config(recovery={"edge_decision": decision})
+    config = tiny_config(recovery={"edge_decision": decision, "reconstruction_sources": ["noise"]})
     run_dir = run_experiment(config, output_dir=tmp_path / decision, graph=graph, make_plots=False)
     summary = json.loads((run_dir / "summary.json").read_text())
     assert summary["edge_decision"] == decision

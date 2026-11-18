@@ -106,3 +106,16 @@ reconstructions = 10             # K per damaged graph
 # docs/conditional-diffusion-design.md section 13). "threshold": previous rule p >= tau.
 edge_decision = "pairwise"       # "pairwise" | "bernoulli" | "threshold"
 calibration_folds = 2            # cross-fitting folds for the validation calibration-quality report
+# Decision 11 (2026-11-18): where the K reconstructions of every damaged graph come from. Both are run,
+# paired (same split, series and reference draws), and saved side by side:
+#   "noise"    : one model (the config seeds), K diffusion noise draws (files without suffix);
+#   "ensemble" : K independently trained models, reconstruction k = model k with its noise draw k
+#                (files with suffix "_ensemble"). Model 1 = the "noise" model (shared). Pairwise only.
+reconstruction_sources = ["noise", "ensemble"]
+
+[ensemble]
+# Decision 11: the K = recovery.reconstructions models of the "ensemble" source. Every model is trained on
+# TRAIN edges only (encoder, community context, denoiser); pool / control / validation untouched.
+resample_mode = "seed_only"      # "seed_only" (all train edges, new model / community seeds; model 1 = config
+                                 # seeds) | "subsample" (fraction of train edges) | "bootstrap" (with replacement)
+fraction = 0.8                   # subsample only

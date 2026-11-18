@@ -16,10 +16,12 @@ def _base():
     return tomllib.loads(BASE.read_text(encoding="utf-8"))
 
 
-def test_plan_is_valid_and_uses_decision_11_ensemble():
+def test_plan_is_valid_and_the_experiment_runs_both_sources():
     plan = load_plan(PLAN)
     assert set(plan["run"]["stages"]) <= set(STAGES)
-    assert plan["ensemble"]["members"] == 10 and plan["ensemble"]["modes"] == ["seed_only"]
+    assert "experiment" in plan["run"]["stages"]
+    base = config_from_dict(_base())
+    assert base.recovery.reconstruction_sources == ("noise", "ensemble")
 
 
 def test_plan_rejects_unknown_stage(tmp_path):
@@ -61,14 +63,14 @@ def test_stage_commands_pass_device_and_ensemble_parameters(tmp_path):
     (experiment,) = commands["experiment"]
     assert experiment[:2] == ["py", "scripts/run_experiment.py"]
     assert experiment[experiment.index("--device") + 1] == plan["run"]["device"]
-    assert Path(experiment[experiment.index("--output-root") + 1]) == tmp_path / "runs"
+    assert Path(experiment[experiment.index("--run-dir") + 1]) == tmp_path / "runs" / plan["run"]["run_name"]
+    assert "--resume" in experiment
     (ensemble,) = commands["ensemble"]
     assert ensemble[ensemble.index("--members") + 1] == "10"
     assert ensemble[ensemble.index("--device") + 1] == plan["run"]["device"]
     assert Path(ensemble[ensemble.index("--out") + 1]) == tmp_path / "ensemble"
-    smoke_run, smoke_ensemble = commands["smoke"]
+    (smoke_run,) = commands["smoke"]
     assert smoke_run[smoke_run.index("--config") + 1].endswith("smoke_config.toml")
-    assert smoke_ensemble[smoke_ensemble.index("--members") + 1] == str(plan["smoke"]["ensemble_members"])
     for stage in ("smoke", "experiment", "ensemble"):
         for command in commands[stage]:
             assert (ROOT / command[1]).exists()

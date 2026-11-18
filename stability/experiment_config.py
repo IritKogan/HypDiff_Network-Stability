@@ -25,6 +25,8 @@ PARAMETERIZATIONS = ("direct", "preconditioned", "geometric")
 SAMPLERS = ("iterative", "one_step", "stochastic")
 EDGE_DECISIONS = ("threshold", "bernoulli", "pairwise")
 TAU_MODES = ("fixed", "val_fpr")
+RECONSTRUCTION_SOURCES = ("noise", "ensemble")
+RESAMPLE_MODES = ("seed_only", "subsample", "bootstrap")  # stability/bootstrap_ensemble.py
 DIFFUSION_STEPS = 200  # upstream HypDiff num_timesteps (hard-coded upstream)
 
 
@@ -124,6 +126,13 @@ class RecoveryConfig:
     reconstructions: int
     edge_decision: str
     calibration_folds: int
+    reconstruction_sources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class EnsembleConfig:
+    resample_mode: str
+    fraction: float
 
 
 @dataclass(frozen=True)
@@ -137,6 +146,7 @@ class ExperimentConfig:
     community: CommunityConfig
     perturbation: PerturbationConfig
     recovery: RecoveryConfig
+    ensemble: EnsembleConfig
 
     def __post_init__(self) -> None:
         _validate(self)
@@ -145,6 +155,7 @@ class ExperimentConfig:
         data = asdict(self)
         data["perturbation"]["damage_fractions"] = list(self.perturbation.damage_fractions)
         data["perturbation"]["attacks"] = list(self.perturbation.attacks)
+        data["recovery"]["reconstruction_sources"] = list(self.recovery.reconstruction_sources)
         return data
 
     def with_overrides(self, **sections: dict[str, Any]) -> "ExperimentConfig":
@@ -170,6 +181,7 @@ SECTIONS = {
     "community": CommunityConfig,
     "perturbation": PerturbationConfig,
     "recovery": RecoveryConfig,
+    "ensemble": EnsembleConfig,
 }
 
 
@@ -311,3 +323,19 @@ def _validate(config: ExperimentConfig) -> None:
     _require(rec.calibration_folds >= 2, "recovery.calibration_folds must be >= 2")
     _require(0.0 < rec.target_fpr < 1.0, "recovery.target_fpr must be in (0, 1)")
     _require(rec.reconstructions > 0, "recovery.reconstructions must be positive")
+    sources = rec.reconstruction_sources
+    _require(
+        len(sources) > 0 and set(sources) <= set(RECONSTRUCTION_SOURCES) and len(set(sources)) == len(sources),
+        f"recovery.reconstruction_sources must be unique values from {RECONSTRUCTION_SOURCES}",
+    )
+    _require(
+        "ensemble" not in sources or rec.edge_decision == "pairwise",
+        "recovery.reconstruction_sources 'ensemble' needs edge_decision 'pairwise' (Decision 11)",
+    )
+    _require(
+        "ensemble" not in sources or rec.reconstructions >= 2,
+        "an ensemble needs recovery.reconstructions >= 2 (K models, reconstruction k = model k)",
+    )
+    ens = config.ensemble
+    _require(ens.resample_mode in RESAMPLE_MODES, f"ensemble.resample_mode in {RESAMPLE_MODES}")
+    _require(0.0 < ens.fraction <= 1.0, "ensemble.fraction must be in (0, 1]")

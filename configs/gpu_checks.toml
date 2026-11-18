@@ -6,14 +6,17 @@
 base_config = "configs/cora.toml"   # experiment config used by every stage
 output_root = "artifacts/gpu_checks" # one timestamped directory per invocation unless --out is given
 device = "cuda"                      # "cuda" | "auto" | "cpu" ("cuda" stops early if no GPU is visible)
+run_name = "cora_noise_vs_ensemble"  # experiment run directory: <out>/runs/<run_name> (resumable)
 # Stages, in order. A finished stage leaves a marker file and is skipped when the same --out is reused.
 #   env        : versions, GPU name, CUDA check
 #   tests      : full pytest suite (CPU-only tests, ~1 min)
-#   smoke      : short GPU run of both programs with the [smoke] overrides (a few minutes)
-#   experiment : full config-driven Cora run (scripts/run_experiment.py)
-#   ensemble   : validation diagnostic with [ensemble] members (scripts/diagnose_bootstrap_ensemble.py)
+#   smoke      : short GPU run of the experiment with the [smoke] overrides (a few minutes)
+#   experiment : full Cora run (scripts/run_experiment.py): single model + K-model ensemble, paired
+#                (Decision 11; K trainings, resumable)
+#   ensemble   : optional validation-only diagnostic (scripts/diagnose_bootstrap_ensemble.py); not needed
+#                for the comparison, which the experiment stage now produces itself
 #   pack       : zip of the output directory to send back
-stages = ["env", "tests", "smoke", "experiment", "ensemble", "pack"]
+stages = ["env", "tests", "smoke", "experiment", "pack"]
 
 [smoke]
 # Overrides applied to base_config for the smoke stage only (section.key = value).
@@ -22,11 +25,11 @@ stages = ["env", "tests", "smoke", "experiment", "ensemble", "pack"]
 "denoiser.epochs" = 30
 "community.max_epochs" = 5
 "perturbation.series" = 2
-"recovery.reconstructions" = 2
-ensemble_members = 2
+"recovery.reconstructions" = 2  # = 2 ensemble models
 
 [ensemble]
-# Decision 11: K = 10 members, seed_only (member 0 = the current single model).
+# Optional "ensemble" stage only (validation diagnostic). The experiment's own ensemble is set in
+# base_config ([ensemble], recovery.reconstructions, recovery.reconstruction_sources).
 modes = ["seed_only"]
 members = 10
 fraction = 0.8          # subsample mode only

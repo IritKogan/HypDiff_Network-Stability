@@ -10,6 +10,13 @@ Everything needed to reproduce a run is written to its directory:
 config.toml / config.json, environment.json, split.npz, series.npz,
 checkpoints/, training_history.json, recovery_counts.npz, edge_recovery.csv,
 control_recovery.csv, summary.json, figures/.
+
+Decision 11: recovery.reconstruction_sources = ["noise", "ensemble"] runs both reconstruction sources
+paired (same split, series, noise seeds and reference draws). "noise" = one model with K noise draws
+(files above); "ensemble" = K models, reconstruction k through model k (stability/ensemble_training.py;
+models in checkpoints/member_XX/, ensemble_members.json, files *_ensemble.*, summary["ensemble"]).
+recovery_counts*.npz also keep every reconstruction's outcome, expected share and probability.
+Runs are resumable (run_experiment(..., resume=True)): finished models are loaded, not retrained.
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from stability.edge_recovery_distribution import (
     per_edge_probability,
 )
 from stability.edge_split import EdgeSplit, split_edges
+from stability.ensemble_training import is_saved, load_models, save_models, train_ensemble
 from stability.experiment_config import ExperimentConfig
 from stability.graph_data import GraphData, load_graph
 from stability.model_training import (
@@ -121,6 +129,7 @@ def run_recoveries(
     log: bool = False,
     calibrators: dict[str, PlattCalibrator] | None = None,
     keep_reconstructions: bool = False,
+    member_models: list[TrainedModels] | None = None,
 ) -> dict[str, dict[str, np.ndarray]]:
     """taus: {"diffusion", "no_diffusion", "clamp_only"} -> per-method thresholds.
 
@@ -139,8 +148,17 @@ def run_recoveries(
     SeedSequence([seed, PAIRWISE_STREAM, method, series, level, k]) (common random numbers).
     The expected value per draw (no draw noise) is the share of control pairs scored strictly lower.
 
-    keep_reconstructions: also return "recovered_by_reconstruction" (levels, series, K, pool) bool, the
-    diffusion outcome of every single reconstruction (it sums over K to "recovered"); used by viewers.
+    keep_reconstructions: also return the outcome of every single reconstruction, used by the method
+    comparison and the viewers: "recovered_by_reconstruction" (diffusion) and "<method>_by_reconstruction"
+    (levels, series, draws, pool) bool (they sum over draws to the counts); "<method>_expected_by_reconstruction"
+    (same shape, float16; drawn edge decisions only); "<method>_probability_by_reconstruction_sum"
+    (levels, draws, pool) and "control_<method>_probability_by_reconstruction_sum" (levels, draws, control):
+    decoded probabilities of reconstruction k summed over series.
+
+    member_models (Decision 11, "ensemble" source): K trained models; reconstruction k of every damaged
+    graph goes through model k (its encoder, community context and denoiser) with noise draw k, also for
+    no_diffusion and clamp_only. Noise seeds and reference draws are the same as for one model, so a run
+    with and without member_models is paired. None = one model for all K reconstructions (as before).
     """
     rec = config.recovery
     bernoulli = rec.edge_decision == "bernoulli"
@@ -179,34 +197,61 @@ def run_recoveries(
         return u_pool[pool_index] < q_removed, u_control < q_control, q_removed, q_control
 
     levels = len(config.perturbation.damage_fractions)
+    K = rec.reconstructions
+    if member_models is not None:
+        if not pairwise:
+            raise ValueError("ensemble reconstructions need edge_decision 'pairwise' (Decision 11)")
+        if len(member_models) != K:
+            raise ValueError(f"need one model per reconstruction: {len(member_models)} models, K = {K}")
+    reconstruction_models = list(member_models) if member_models is not None else [models] * K
+    # one model for every reconstruction (the "noise" source): deterministic methods are computed once
+    single_model = all(m is reconstruction_models[0] for m in reconstruction_models)
+    distinct = {id(m): m for m in reconstruction_models}
     features = graph.features.to(device)
-    labels = models.context.labels.to(device)
-    centers = models.context.centers.to(device)
+    context = {key: (m.context.labels.to(device), m.context.centers.to(device)) for key, m in distinct.items()}
     control = torch.as_tensor(split.control_pairs, device=device)
     kept_edges = np.concatenate([split.train, split.val])
+    deterministic = ("no_diffusion", "clamp_only")
     results = {}
     for attack, items in series.items():
         shape = (levels, len(items), len(split.pool))
         control_shape = (levels, len(items), len(split.control_pairs))
         removed = np.zeros(shape, dtype=bool)
         recovered = np.zeros(shape, dtype=np.int16)
-        by_reconstruction = (np.zeros((levels, len(items), rec.reconstructions, len(split.pool)), dtype=bool)
-                             if keep_reconstructions else None)
         recovered_probability = np.zeros(shape, dtype=np.float32)    # sum over K
-        no_diffusion = np.zeros(shape, dtype=np.int16)
-        no_diffusion_probability = np.zeros(shape, dtype=np.float32)
         control_hits = np.zeros(control_shape, dtype=np.int16)
         control_probability_sum = np.zeros(control_shape, dtype=np.float32)
-        control_no_diffusion = np.zeros(control_shape, dtype=np.int16)
-        control_no_diffusion_probability = np.zeros(control_shape, dtype=np.float32)
-        clamp_only = np.zeros(shape, dtype=np.int16)
-        clamp_only_probability = np.zeros(shape, dtype=np.float32)
-        control_clamp_only = np.zeros(control_shape, dtype=np.int16)
+        # deterministic methods: counts over draws, probability = mean over draws (one value for one model)
+        counts = {m: np.zeros(shape, dtype=np.int16) for m in deterministic}
+        probability = {m: np.zeros(shape, dtype=np.float32) for m in deterministic}
+        control_counts = {m: np.zeros(control_shape, dtype=np.int16) for m in deterministic}
+        control_probability = {m: np.zeros(control_shape, dtype=np.float32) for m in deterministic}
         # Decision 10: expected decision per draw summed over draws (no draw noise):
         # bernoulli -> calibrated probability; pairwise -> share of control pairs scored lower
         expected = {m: np.zeros(shape, dtype=np.float32) for m in METHOD_CODES}
         control_expected = {m: np.zeros(control_shape, dtype=np.float32) for m in METHOD_CODES}
-        control_clamp_only_probability = np.zeros(control_shape, dtype=np.float32)
+        # keep_reconstructions: per-reconstruction outcomes of every method (k = model k for an ensemble),
+        # expected shares per (series, k) and decoded probabilities per k summed over series
+        method_draws = {"diffusion": K, "no_diffusion": draws, "clamp_only": draws}
+        if keep_reconstructions:
+            outcome_k = {m: np.zeros((levels, len(items), d, len(split.pool)), dtype=bool)
+                         for m, d in method_draws.items()}
+            expected_k = ({m: np.zeros((levels, len(items), d, len(split.pool)), dtype=np.float16)
+                           for m, d in method_draws.items()} if (bernoulli or pairwise) else None)
+            probability_k = {m: np.zeros((levels, d, len(split.pool)), dtype=np.float32)
+                             for m, d in method_draws.items()}
+            control_probability_k = {m: np.zeros((levels, d, len(split.control_pairs)), dtype=np.float32)
+                                     for m, d in method_draws.items()}
+
+        def record(method, level, s, k, pool_index, hit, q_r, p_removed, p_control):
+            if not keep_reconstructions:
+                return
+            outcome_k[method][level, s, k, pool_index] = hit
+            if expected_k is not None:
+                expected_k[method][level, s, k, pool_index] = q_r
+            probability_k[method][level, k, pool_index] += p_removed
+            control_probability_k[method][level, k] += p_control
+
         for item in items:
             s = item.series_index
             started = time.time()
@@ -217,51 +262,69 @@ def run_recoveries(
                 damaged = np.concatenate([kept_edges, split.pool[keep]])
                 adjacency = normalized_adjacency(graph.node_count, damaged, device)
                 removed_pairs = torch.as_tensor(split.pool[pool_index], device=device)
+                scored = {}
+
+                def scores(model):
+                    """Embedding of the damaged graph + deterministic-method probabilities, once per model."""
+                    key = id(model)
+                    if key not in scored:
+                        labels, centers = context[key]
+                        embeddings = model.encoder.encode(features, adjacency)[2]
+                        shrunk = model.denoiser.shrink_to_prototype(embeddings, labels, centers)
+                        scored[key] = {
+                            "embeddings": embeddings,
+                            "no_diffusion": (_decode(model.encoder, embeddings, removed_pairs),
+                                             _decode(model.encoder, embeddings, control)),
+                            "clamp_only": (_decode(model.encoder, shrunk, removed_pairs),
+                                           _decode(model.encoder, shrunk, control)),
+                        }
+                    return scored[key]
+
                 with torch.no_grad():
-                    embeddings = models.encoder.encode(features, adjacency)[2]
-                    p_removed = _decode(models.encoder, embeddings, removed_pairs)
-                    p_control = _decode(models.encoder, embeddings, control)
-                    no_diffusion_probability[level, s, pool_index] = p_removed
-                    control_no_diffusion_probability[level, s] = p_control
-                    for k in range(draws):
-                        hit, control_hit, q_r, q_c = decide("no_diffusion", p_removed, p_control,
-                                                            pool_index, s, level, k)
-                        no_diffusion[level, s, pool_index] += hit
-                        control_no_diffusion[level, s] += control_hit
-                    if bernoulli or pairwise:
-                        expected["no_diffusion"][level, s, pool_index] = q_r * draws
-                        control_expected["no_diffusion"][level, s] = q_c * draws
-                    shrunk = models.denoiser.shrink_to_prototype(embeddings, labels, centers)
-                    p_removed = _decode(models.encoder, shrunk, removed_pairs)
-                    p_control = _decode(models.encoder, shrunk, control)
-                    clamp_only_probability[level, s, pool_index] = p_removed
-                    control_clamp_only_probability[level, s] = p_control
-                    for k in range(draws):
-                        hit, control_hit, q_r, q_c = decide("clamp_only", p_removed, p_control,
-                                                            pool_index, s, level, k)
-                        clamp_only[level, s, pool_index] += hit
-                        control_clamp_only[level, s] += control_hit
-                    if bernoulli or pairwise:
-                        expected["clamp_only"][level, s, pool_index] = q_r * draws
-                        control_expected["clamp_only"][level, s] = q_c * draws
-                    for k in range(rec.reconstructions):
+                    for method in deterministic:
+                        p_sum = q_sum = None
+                        for k in range(draws):
+                            p_removed, p_control = scores(reconstruction_models[k])[method]
+                            hit, control_hit, q_r, q_c = decide(method, p_removed, p_control,
+                                                                pool_index, s, level, k)
+                            counts[method][level, s, pool_index] += hit
+                            control_counts[method][level, s] += control_hit
+                            record(method, level, s, k, pool_index, hit, q_r, p_removed, p_control)
+                            if single_model:
+                                if k == 0:
+                                    probability[method][level, s, pool_index] = p_removed
+                                    control_probability[method][level, s] = p_control
+                                    if bernoulli or pairwise:
+                                        expected[method][level, s, pool_index] = q_r * draws
+                                        control_expected[method][level, s] = q_c * draws
+                                continue
+                            p_sum = (p_removed, p_control) if p_sum is None else (
+                                p_sum[0] + p_removed, p_sum[1] + p_control)
+                            q_sum = (q_r, q_c) if q_sum is None else (q_sum[0] + q_r, q_sum[1] + q_c)
+                        if not single_model:
+                            probability[method][level, s, pool_index] = p_sum[0] / draws
+                            control_probability[method][level, s] = p_sum[1] / draws
+                            expected[method][level, s, pool_index] = q_sum[0]
+                            control_expected[method][level, s] = q_sum[1]
+                    for k in range(K):
+                        model = reconstruction_models[k]
+                        labels, centers = context[id(model)]
                         generator = torch.Generator(device=device)
                         generator.manual_seed(recovery_seed(rec.seed, s, k))
-                        recovered_embeddings = models.denoiser.sample_from_tstar(
-                            damaged_embeddings=embeddings,
+                        recovered_embeddings = model.denoiser.sample_from_tstar(
+                            damaged_embeddings=scores(model)["embeddings"],
                             damaged_adjacency=adjacency,
                             labels=labels,
                             prototypes=centers,
                             t_star=rec.t_star,
                             generator=generator,
                         )
-                        p_removed = _decode(models.encoder, recovered_embeddings, removed_pairs)
-                        p_control = _decode(models.encoder, recovered_embeddings, control)
+                        p_removed = _decode(model.encoder, recovered_embeddings, removed_pairs)
+                        p_control = _decode(model.encoder, recovered_embeddings, control)
                         hit, control_hit, q_r, q_c = decide("diffusion", p_removed, p_control,
                                                             pool_index, s, level, k)
                         recovered[level, s, pool_index] += hit
-                        if by_reconstruction is not None:
-                            by_reconstruction[level, s, k, pool_index] = hit
+                        record("diffusion", level, s, k, pool_index, hit, q_r, p_removed, p_control)
                         recovered_probability[level, s, pool_index] += p_removed
                         control_hits[level, s] += control_hit
                         control_probability_sum[level, s] += p_control
@@ -270,24 +333,33 @@ def run_recoveries(
                             control_expected["diffusion"][level, s] += q_c
                 removed[level, s, pool_index] = True
             if log:
-                print(f"[recovery] {attack} series {s + 1}/{len(items)} "
+                print(f"[recovery{'' if single_model else ' ensemble'}] {attack} series {s + 1}/{len(items)} "
                       f"({time.time() - started:.1f}s)", flush=True)
+        kept = {}
+        if keep_reconstructions:
+            kept["recovered_by_reconstruction"] = outcome_k["diffusion"]
+            kept.update({f"{m}_by_reconstruction": outcome_k[m] for m in deterministic})
+            if expected_k is not None:
+                kept.update({f"{m}_expected_by_reconstruction": expected_k[m] for m in METHOD_CODES})
+            kept.update({f"{m}_probability_by_reconstruction_sum": probability_k[m] for m in METHOD_CODES})
+            kept.update({f"control_{m}_probability_by_reconstruction_sum": control_probability_k[m]
+                         for m in METHOD_CODES})
         results[attack] = {
             "removed": removed,
             "recovered": recovered,
             "recovered_probability_sum": recovered_probability,
-            "no_diffusion": no_diffusion,
-            "no_diffusion_probability": no_diffusion_probability,
+            "no_diffusion": counts["no_diffusion"],
+            "no_diffusion_probability": probability["no_diffusion"],
             "control_hits": control_hits,
             "control_probability_sum": control_probability_sum,
-            "control_no_diffusion": control_no_diffusion,
-            "control_no_diffusion_probability": control_no_diffusion_probability,
-            "clamp_only": clamp_only,
-            "clamp_only_probability": clamp_only_probability,
-            "control_clamp_only": control_clamp_only,
-            "control_clamp_only_probability": control_clamp_only_probability,
+            "control_no_diffusion": control_counts["no_diffusion"],
+            "control_no_diffusion_probability": control_probability["no_diffusion"],
+            "clamp_only": counts["clamp_only"],
+            "clamp_only_probability": probability["clamp_only"],
+            "control_clamp_only": control_counts["clamp_only"],
+            "control_clamp_only_probability": control_probability["clamp_only"],
             "deterministic_draws": np.asarray(draws),
-            **({"recovered_by_reconstruction": by_reconstruction} if by_reconstruction is not None else {}),
+            **kept,
             **{f"{m}_expected_sum": expected[m] for m in METHOD_CODES},
             **{f"control_{m}_expected_sum": control_expected[m] for m in METHOD_CODES},
         }
@@ -431,13 +503,13 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def _plot(run_dir: Path, results, models: TrainedModels, config: ExperimentConfig) -> None:
+def _plot(run_dir: Path, results, models: TrainedModels, config: ExperimentConfig, suffix: str = "") -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     figures = run_dir / "figures"
-    figures.mkdir()
+    figures.mkdir(exist_ok=True)
     history = models.history
     fig, axes = plt.subplots(1, 3, figsize=(13, 3.5))
     axes[0].plot(history["autoencoder_train_loss"])
@@ -477,7 +549,7 @@ def _plot(run_dir: Path, results, models: TrainedModels, config: ExperimentConfi
             axis.set_ylabel("fraction of pairs")
         axes[row][0].legend(fontsize=8)
     fig.tight_layout()
-    fig.savefig(figures / "p_e_distributions.png", dpi=120)
+    fig.savefig(figures / f"p_e_distributions{suffix}.png", dpi=120)
     plt.close(fig)
 
 
@@ -488,7 +560,9 @@ def run_experiment(
     graph: GraphData | None = None,
     log_every: int = 0,
     make_plots: bool = True,
+    resume: bool = False,
 ) -> Path:
+    """Run (or, with resume=True and an existing output_dir, continue) one experiment."""
     started = datetime.now(timezone.utc)
     device = resolve_device(config.run.device)
     if output_dir is None:
@@ -497,16 +571,25 @@ def run_experiment(
             root = ROOT / root
         output_dir = root / f"{config.run.name}_{started.strftime('%Y%m%dT%H%M%SZ')}"
     output_dir = Path(output_dir)
-    if output_dir.exists():
-        raise FileExistsError(f"refusing to overwrite run directory: {output_dir}")
-    output_dir.mkdir(parents=True)
-
-    _write_json(output_dir / "config.json", config.to_dict())
-    if config_text is not None:
-        (output_dir / "config.toml").write_text(config_text, encoding="utf-8")
-    environment = environment_record(device)
-    environment["started_utc"] = started.isoformat()
-    _write_json(output_dir / "environment.json", environment)
+    resuming = output_dir.exists() and (output_dir / "config.json").is_file()
+    if output_dir.exists() and not resume:
+        raise FileExistsError(f"refusing to overwrite run directory: {output_dir} (use resume to continue it)")
+    if resuming:
+        saved = json.loads((output_dir / "config.json").read_text(encoding="utf-8"))
+        if saved != json.loads(json.dumps(config.to_dict())):
+            raise ValueError(f"cannot resume {output_dir}: its config.json differs from the given config")
+        if (output_dir / "summary.json").is_file():
+            return output_dir   # already finished
+        _write_json(output_dir / f"environment_resumed_{started.strftime('%Y%m%dT%H%M%SZ')}.json",
+                    environment_record(device))
+    else:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(output_dir / "config.json", config.to_dict())
+        if config_text is not None:
+            (output_dir / "config.toml").write_text(config_text, encoding="utf-8")
+        environment = environment_record(device)
+        environment["started_utc"] = started.isoformat()
+        _write_json(output_dir / "environment.json", environment)
 
     if graph is None:
         data_root = Path(config.data.root)
@@ -542,16 +625,30 @@ def run_experiment(
         removal_counts=np.asarray(next(iter(series.values()))[0].removal_counts),
     )
 
-    models = train_models(graph, split, config, device, log_every=log_every)
     checkpoints = output_dir / "checkpoints"
-    checkpoints.mkdir()
-    torch.save(models.encoder.state_dict(), checkpoints / "encoder.pt")
-    torch.save(models.denoiser.state_dict(), checkpoints / "denoiser.pt")
-    torch.save(
-        {"labels": models.context.labels.cpu(), "centers": models.context.centers.cpu()},
-        checkpoints / "community_context.pt",
-    )
+    if is_saved(checkpoints):
+        models = load_models(graph, split.train, config, device, checkpoints)
+        if log_every:
+            print("[training] model 1 loaded from checkpoints/", flush=True)
+    else:
+        training_started = time.time()
+        models = train_models(graph, split, config, device, log_every=log_every)
+        models.history["training_seconds"] = round(time.time() - training_started, 1)
+        save_models(models, checkpoints, {"member": 0, "model_seed": config.model.seed,
+                                          "community_seed": config.community.seed,
+                                          "train_edges_used": int(len(split.train)),
+                                          "training_seconds": models.history["training_seconds"]})
     _write_json(output_dir / "training_history.json", models.history)
+    sources = config.recovery.reconstruction_sources
+    members, member_records = None, None
+    if "ensemble" in sources:
+        def validate_member(member, member_models, directory):
+            directory.mkdir(parents=True, exist_ok=True)
+            _write_json(directory / "validation_recovery.json",
+                        validation_recovery(graph, split, member_models, config, device))
+
+        members, member_records = train_ensemble(graph, split, config, device, checkpoints, models,
+                                                 log_every=log_every, after_member=validate_member)
 
     validation = validation_recovery(graph, split, models, config, device)
     _write_json(output_dir / "validation_recovery.json", validation)
@@ -560,15 +657,44 @@ def run_experiment(
         print(f"[validation] {json.dumps(validation)}", flush=True)
     calibrators = {method: PlattCalibrator(**validation[method]["calibration"]["calibrator"])
                    for method in ("diffusion", "no_diffusion", "clamp_only")}
-    results = run_recoveries(graph, split, series, models, config, device, taus, log=bool(log_every),
-                             calibrators=calibrators)
-    np.savez_compressed(
-        output_dir / "recovery_counts.npz",
-        **{f"{attack}__{name}": array for attack, arrays in results.items() for name, array in arrays.items()},
-    )
-    summary, edge_rows, control_rows = summarize(graph, split, results, config)
-    _write_csv(output_dir / "edge_recovery.csv", edge_rows)
-    _write_csv(output_dir / "control_recovery.csv", control_rows)
+    source_results, source_summaries, recovery_seconds = {}, {}, {}
+    for source in sources:
+        suffix = "" if source == "noise" else "_ensemble"
+        recovery_started = time.time()
+        results = run_recoveries(graph, split, series, models, config, device, taus, log=bool(log_every),
+                                 calibrators=calibrators, keep_reconstructions=True,
+                                 member_models=members if source == "ensemble" else None)
+        recovery_seconds[source] = round(time.time() - recovery_started, 1)
+        np.savez_compressed(
+            output_dir / f"recovery_counts{suffix}.npz",
+            **{f"{attack}__{name}": array for attack, arrays in results.items() for name, array in arrays.items()},
+        )
+        source_summary, edge_rows, control_rows = summarize(graph, split, results, config)
+        _write_csv(output_dir / f"edge_recovery{suffix}.csv", edge_rows)
+        _write_csv(output_dir / f"control_recovery{suffix}.csv", control_rows)
+        source_results[source], source_summaries[source] = results, source_summary
+    ensemble_summary = None
+    if members is not None:
+        member_validation = []
+        for record in member_records:
+            directory = output_dir / record["checkpoint"]
+            validation_file = directory / "validation_recovery.json"
+            member_val = validation if record["checkpoint"] == checkpoints.name else json.loads(
+                validation_file.read_text(encoding="utf-8"))
+            member_validation.append({m: member_val[m]["auc_mean_probability"]
+                                      for m in ("diffusion", "no_diffusion", "clamp_only")})
+        _write_json(output_dir / "ensemble_members.json", {
+            "resample_mode": config.ensemble.resample_mode, "members": member_records,
+            "validation_auc_mean_probability": member_validation,
+        })
+        ensemble_summary = {
+            **source_summaries["ensemble"],
+            "resample_mode": config.ensemble.resample_mode,
+            "members": len(members),
+            "member_validation_auc_mean_probability": member_validation,
+            "training_seconds_total": float(sum(r["training_seconds"] or 0.0 for r in member_records)),
+        }
+    summary = source_summaries.get("noise", {})
     finished = datetime.now(timezone.utc)
     summary = {
         "dataset": graph.name,
@@ -598,13 +724,21 @@ def run_experiment(
             "Thresholds per method from validation (tau_mode); AUC uses mean probabilities (threshold-free).",
             "Levels are nested within a series: between-level distances are descriptive only.",
             "Recovery noise seeds are shared across attacks and levels (common random numbers).",
+            "Decision 11: 'ensemble' = reconstruction k through independently trained model k (summary['ensemble'],"
+            " files *_ensemble); paired with 'noise' (same series, noise seeds and reference draws; model 1 shared).",
         ],
         **summary,
+        "reconstruction_sources": list(sources),
+        **({"ensemble": ensemble_summary} if ensemble_summary is not None else {}),
+        "training_seconds_model_1": models.history.get("training_seconds"),
+        "recovery_seconds": recovery_seconds,
+        "resumed": resuming,
         "started_utc": started.isoformat(),
         "finished_utc": finished.isoformat(),
         "duration_seconds": (finished - started).total_seconds(),
     }
     _write_json(output_dir / "summary.json", summary)
     if make_plots:
-        _plot(output_dir, results, models, config)
+        for source, results in source_results.items():
+            _plot(output_dir, results, models, config, suffix="" if source == "noise" else "_ensemble")
     return output_dir
