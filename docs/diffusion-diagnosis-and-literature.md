@@ -151,3 +151,49 @@ with calibration as the validity check. The defensible novelty is this combinati
 geometric decomposition (angular vs radial), not conditional diffusion or edge reliability as
 such. Guimerà & Sales-Pardo, Peixoto, SGDM and PIFM should be in the related-work section; an
 SBM-ensemble reliability score is a natural baseline.
+
+## 5. Idea A: model uncertainty via an ensemble trained on resampled train edges (2026-11-18)
+
+Motivation (literature, 2026-11-18): diffusion / flow models for missing links either show near-zero
+sample diversity on Cora (SGDM with EDGE: "consensus" ~0) or do not analyse it (PIFM: 1 step best,
+source noise 0 in the CE runs). Diversity loss under a strong condition is a known effect (CADS,
+Sadat et al., ICLR 2024). All five earlier attempts measured randomness INSIDE one trained model
+(aleatoric). Not tested so far: uncertainty ABOUT the model (epistemic; ensembles, DECU / HyperDM),
+which on a single graph is the natural source of "other plausible reconstructions" and matches
+resampling-based stability (Volkovich et al. 2011). Peixoto (2025): consensus over posterior samples
+improves reconstruction accuracy -> success criterion.
+
+Method (stability/bootstrap_ensemble.py, scripts/diagnose_bootstrap_ensemble.py; validation only):
+M = 5 members, each a full training (encoder, community context, Decision 8 denoiser, configs/cora.toml)
+on a resample of the TRAIN edges; train edges a member does not learn from stay forbidden as its
+negatives; val / pool / control untouched. Input graph for scoring = all train edges. Reconstruction k
+= member k (its noise draw k). Modes: seed_only (all train edges, new seeds; member 0 = current model)
+and subsample (80% of train edges). ~15 min per member on 1 CPU thread.
+Output: artifacts/diagnostics/bootstrap_ensemble/bootstrap_ensemble.json (not in git).
+
+| setting | AUC (mean prob.) | std of expected p_e across K (val edges) | LL gain over single model | strat. AUC p_e / own mean | LL gain of disagreement |
+|---|---|---|---|---|---|
+| single model, K = 10 noise draws (current) | 0.856 | 0.010 | +0.002 | 0.49 | +0.000 |
+| seed_only ensemble, 5 members | **0.878** | 0.059 | **+0.022** | 0.48 | +0.001 |
+| subsample-80% single member | 0.836 | 0.010 | +0.002 | 0.53 | +0.000 |
+| subsample-80% ensemble, 5 members | 0.872 | 0.088 | **+0.040** | 0.53 | +0.002 |
+
+Member AUCs: seed_only 0.853-0.861 (std 0.003); subsample 0.834-0.838.
+
+Findings:
+- The variance is real: reconstructions from different members differ 6-9x more than noise draws of
+  one model.
+- It is useful: averaging over it (the ensemble p_e) is clearly more accurate than any single model
+  (AUC +0.02 to +0.04; CV log-likelihood gain 10-20x that of the single model's own spread). This is the
+  Peixoto consensus effect, measured on validation edges only.
+- Given the ensemble mean, the per-edge pattern of disagreement adds almost nothing (LL gain <= 0.002;
+  stratified AUC 0.42-0.47, i.e. slightly MORE disagreement on true edges, weak). So p_e remains
+  essentially "how strongly the models agree that the edge is there", now averaged over model
+  uncertainty instead of one fit.
+- seed_only gives the best ensemble (0.878); subsample adds more spread but weaker members (fewer
+  edges). Single split, 5 members, validation only: preliminary.
+
+Proposal (needs students' approval; would become Decision 11): recovery.reconstruction_source =
+"ensemble" — the K reconstructions of every damaged graph come from K independently trained models
+(seed_only, or subsample with fraction in the config); noise draws stay as now. Cost: K trainings
+(Colab). Pool edges are still never seen in training.
