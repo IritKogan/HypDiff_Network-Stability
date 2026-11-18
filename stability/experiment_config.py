@@ -95,6 +95,7 @@ class DenoiserConfig:
     angular_noise: str
     parameterization: str
     prior_variance: float
+    nonfinite_max_skips: int
 
 
 @dataclass(frozen=True)
@@ -273,6 +274,7 @@ def _validate(config: ExperimentConfig) -> None:
     _require(0 < den.train_t_max <= DIFFUSION_STEPS, f"denoiser.train_t_max must be in (0, {DIFFUSION_STEPS}]")
     _require(den.edge_loss_weight >= 0.0, "denoiser.edge_loss_weight must be non-negative")
     _require(den.t_sampling in T_SAMPLING, f"denoiser.t_sampling in {T_SAMPLING}")
+    _require(den.nonfinite_max_skips >= 0, "denoiser.nonfinite_max_skips must be non-negative")
     _require(den.angular_noise in ANGULAR_NOISE, f"denoiser.angular_noise in {ANGULAR_NOISE}")
     _require(den.parameterization in PARAMETERIZATIONS, f"denoiser.parameterization in {PARAMETERIZATIONS}")
     _require(den.prior_variance >= 0.0, "denoiser.prior_variance must be non-negative (0 = estimate)")

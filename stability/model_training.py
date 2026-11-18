@@ -266,7 +266,19 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
     encoder_requires_grad = [p.requires_grad for p in encoder.parameters()]
     for parameter in encoder.parameters():
         parameter.requires_grad_(False)
-    losses, drops, mses = [], [], []
+    losses, drops, mses, skipped = [], [], [], []
+
+    def skip(epoch: int, reason: str) -> None:
+        """Non-finite loss / gradients: no parameter update for this epoch (denoiser.nonfinite_max_skips)."""
+        skipped.append({"epoch": epoch, "reason": reason})
+        if len(skipped) > den.nonfinite_max_skips:
+            raise RuntimeError(f"non-finite denoiser {reason} at epoch {epoch} "
+                               f"({len(skipped)} skipped epochs > nonfinite_max_skips = {den.nonfinite_max_skips})")
+        optimizer.zero_grad()
+        losses.append(float("nan"))
+        if log_every:
+            print(f"[denoiser] epoch {epoch}: non-finite {reason}, step skipped ({len(skipped)} so far)", flush=True)
+
     for epoch in range(den.epochs):
         denoiser.train()
         optimizer.zero_grad()
@@ -319,8 +331,12 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
                 )
             drops.append(fraction)
         if not torch.isfinite(loss):
-            raise RuntimeError(f"non-finite denoiser loss at epoch {epoch}")
+            skip(epoch, "loss")
+            continue
         loss.backward()
+        if not all(torch.isfinite(p.grad).all() for p in denoiser.parameters() if p.grad is not None):
+            skip(epoch, "gradients")
+            continue
         optimizer.step()
         losses.append(float(loss.detach()))
         if log_every and epoch % log_every == 0:
@@ -330,7 +346,9 @@ def train_denoiser(graph, split, config, device, encoder, args, train_adjacency,
         parameter.requires_grad_(False)
     for parameter, flag in zip(encoder.parameters(), encoder_requires_grad):
         parameter.requires_grad_(flag)
-    history = {"denoiser_loss": losses, "denoiser_drop_fractions": drops}
+    if not all(torch.isfinite(p).all() for p in denoiser.parameters()):
+        raise RuntimeError("denoiser parameters are non-finite after training")
+    history = {"denoiser_loss": losses, "denoiser_drop_fractions": drops, "denoiser_skipped_epochs": skipped}
     if mses:
         history["denoiser_mse"] = mses
     if prior_variance is not None:

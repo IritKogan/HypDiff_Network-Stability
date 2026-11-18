@@ -69,6 +69,9 @@ parameterization = "direct"      # "direct" (network predicts x0) | "preconditio
                                  # | "geometric" (conditional_residual_gcn only: deterministic mean mu(c) + stochastic
                                  #   part in 2 geometric coordinates per node: community offset, popularity)
 prior_variance = 0.0             # preconditioned / geometric (initial prior): v = Var(x0 - c); 0 = estimate on training damage
+nonfinite_max_skips = 50         # (2026-11-18, GPU run) an epoch whose loss or gradients are non-finite is skipped (no
+                                 # update; logged in training_history "denoiser_skipped_epochs"); training stops after
+                                 # more than this many. 0 = stop at the first one (behaviour before 2026-11-18).
                                  # | "folded": sgn(dir) * |eps| (DDM, paper Eq. C.1; truly direction-restricted)
 
 [community]

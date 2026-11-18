@@ -111,6 +111,7 @@ def train_ensemble(
                 "model_seed": mconfig.model.seed, "community_seed": mconfig.community.seed,
                 "train_edges_used": int(len(split.train)), "held_out_train_edges": 0,
                 "training_seconds": base_models.history.get("training_seconds"),
+                "denoiser_skipped_epochs": base_models.history.get("denoiser_skipped_epochs", []),
             })
             continue
         directory = member_directory(checkpoints, member)
@@ -133,7 +134,12 @@ def train_ensemble(
                 "train_edges_used": int(len(msplit.train)),
                 "held_out_train_edges": int(len(msplit.held_out_train)),
                 "training_seconds": models.history["training_seconds"],
+                "denoiser_skipped_epochs": models.history.get("denoiser_skipped_epochs", []),
             }
+            if log_every:
+                skipped = len(models.history.get("denoiser_skipped_epochs", []))
+                print(f"[ensemble] member {member + 1}/{config.recovery.reconstructions} trained in "
+                      f"{models.history['training_seconds']:.0f}s (skipped denoiser epochs: {skipped})", flush=True)
             if after_member is not None:
                 after_member(member, models, directory)
             save_models(models, directory, record)

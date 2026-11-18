@@ -634,6 +634,8 @@ def run_experiment(
         training_started = time.time()
         models = train_models(graph, split, config, device, log_every=log_every)
         models.history["training_seconds"] = round(time.time() - training_started, 1)
+        if log_every:
+            print(f"[training] model 1 trained in {models.history['training_seconds']:.0f}s", flush=True)
         save_models(models, checkpoints, {"member": 0, "model_seed": config.model.seed,
                                           "community_seed": config.community.seed,
                                           "train_edges_used": int(len(split.train)),
