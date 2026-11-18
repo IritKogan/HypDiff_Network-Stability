@@ -146,7 +146,7 @@ def test_node_ids_and_feature_rows_survive_perturbation_with_isolated_node(tmp_p
     config = PilotConfig(curvature=1.0, tau=0.5)
     args = model_args(graph, config)
     encoder = StabilityLPModel(args).cpu().eval()
-    denoiser = StabilityDiffusion(args, dim=args.dim, curvature=config.curvature).cpu().eval()
+    denoiser = StabilityDiffusion(args, dim=args.dim, curvature=config.curvature, device="cpu").cpu().eval()
     node_index = {node: index for index, node in enumerate(graph.node_ids)}
     original_edges = tuple(
         (node_index[source], node_index[target]) for source, target in graph.edges

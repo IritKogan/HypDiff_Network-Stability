@@ -47,7 +47,7 @@ def reference_upstream_formula(model, x_t, t, x0):
 def _make(noise_formula):
     torch.manual_seed(0)
     return StabilityDiffusion(
-        SimpleNamespace(r=2.0, t=1.0), dim=DIM, noise_formula=noise_formula
+        SimpleNamespace(r=2.0, t=1.0), dim=DIM, noise_formula=noise_formula, device="cpu"
     ).to("cpu")
 
 

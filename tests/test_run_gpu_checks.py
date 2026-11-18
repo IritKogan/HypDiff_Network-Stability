@@ -4,7 +4,7 @@ import tomllib
 import pytest
 
 from scripts.run_gpu_checks import (
-    ROOT, STAGES, apply_overrides, dump_toml, load_plan, smoke_config, stage_commands,
+    ROOT, STAGES, apply_overrides, dump_toml, load_plan, smoke_config, stage_commands, unsupported_gpus,
 )
 from stability.experiment_config import config_from_dict
 
@@ -74,3 +74,10 @@ def test_stage_commands_pass_device_and_ensemble_parameters(tmp_path):
     for stage in ("smoke", "experiment", "ensemble"):
         for command in commands[stage]:
             assert (ROOT / command[1]).exists()
+
+
+def test_unsupported_gpu_architecture_is_detected():
+    cu126 = ["sm_50", "sm_60", "sm_61", "sm_70", "sm_75", "sm_80", "sm_86", "sm_90"]
+    assert unsupported_gpus([(12, 0)], cu126) == ["sm_120"]        # Blackwell on a cu126 build
+    assert unsupported_gpus([(8, 6)], cu126) == []
+    assert unsupported_gpus([(12, 0)], cu126 + ["sm_100", "sm_120"]) == []

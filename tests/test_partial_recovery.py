@@ -75,7 +75,7 @@ class PartialRecoveryTests(unittest.TestCase):
         self.config.apply_to_args(self.args)
         self.encoder = StabilityLPModel(self.args).cpu().eval()
         self.denoiser = StabilityDiffusion(
-            self.args, dim=self.args.dim, curvature=self.config.curvature
+            self.args, dim=self.args.dim, curvature=self.config.curvature, device="cpu"
         ).cpu().eval()
         self.clusterer = HyperbolicKMeans(n_clusters=2, curvature=1.0)
         self.node_ids = ("a", "b", "c", "d")

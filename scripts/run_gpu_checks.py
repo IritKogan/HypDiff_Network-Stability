@@ -19,8 +19,9 @@ Setup on the GPU machine (once):
     cd HypDiff_Network-Stability
     conda create -n hypdiff-gpu python=3.11 -y && conda activate hypdiff-gpu
     # torch WITH CUDA (on Windows the plain "pip install torch" is CPU-only). torch 2.12 wheels exist
-    # for cu126 / cu130 / cu132: run nvidia-smi; "CUDA Version" >= 13.0 -> cu130, otherwise cu126.
-    pip install torch==2.12.0 --index-url https://download.pytorch.org/whl/cu126
+    # for cu126 / cu130 / cu132. Blackwell GPUs (RTX 50xx, RTX PRO ... Blackwell; sm_120) need cu130 or
+    # newer; older GPUs with a driver below CUDA 13 (nvidia-smi "CUDA Version") need cu126.
+    pip install torch==2.12.0 --index-url https://download.pytorch.org/whl/cu130
     pip install -r requirements-phaseb.txt pytest
     python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 Then:
@@ -163,6 +164,12 @@ def _required_versions() -> dict[str, str]:
     return pins
 
 
+def unsupported_gpus(capabilities: list[tuple[int, int]], arch_list: list[str]) -> list[str]:
+    """GPU architectures (sm_XY) that the installed torch build has no kernels for."""
+    built = {a for a in arch_list if a.startswith("sm_")}
+    return [f"sm_{major}{minor}" for major, minor in capabilities if f"sm_{major}{minor}" not in built]
+
+
 def environment_check(device: str) -> dict[str, Any]:
     from importlib import metadata
 
@@ -184,6 +191,7 @@ def environment_check(device: str) -> dict[str, Any]:
         "gpus": [{"name": torch.cuda.get_device_name(i),
                   "memory_gb": round(torch.cuda.get_device_properties(i).total_memory / 2**30, 1)}
                  for i in range(torch.cuda.device_count())],
+        "torch_arch_list": torch.cuda.get_arch_list() if torch.cuda.is_available() else [],
         "pinned": pins,
         "installed": installed,
         "version_mismatches": {n: {"pinned": pins[n], "installed": installed[n]}
@@ -198,6 +206,15 @@ def environment_check(device: str) -> dict[str, Any]:
         raise RuntimeError(
             "CUDA is not available to torch (torch build: %s). Install a CUDA build of torch, see the "
             "setup notes at the top of this script." % torch.__version__)
+    if record["cuda_available"]:
+        missing = unsupported_gpus([torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count())],
+                                   record["torch_arch_list"])
+        if missing and device != "cpu":
+            raise RuntimeError(
+                f"this torch build ({torch.__version__}) has no kernels for the GPU architecture {missing} "
+                f"(built for {record['torch_arch_list']}). Newer GPUs (e.g. RTX 50xx / Blackwell, sm_120) need "
+                "a CUDA 13 build: pip install --force-reinstall torch==2.12.0 "
+                "--index-url https://download.pytorch.org/whl/cu130")
     if installed.get("networkx") != pins.get("networkx"):
         raise RuntimeError("networkx must be exactly %s (pip install networkx==%s)"
                            % (pins.get("networkx"), pins.get("networkx")))
