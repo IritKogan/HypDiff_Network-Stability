@@ -1,0 +1,34 @@
+# Consolidated GPU run (scripts/run_gpu_checks.py) for a local machine with an NVIDIA GPU.
+# Every parameter of the run lives here; a copy is saved in the output directory.
+# The experiment parameters themselves (epochs, t*, K, N, seeds, ...) come from base_config.
+
+[run]
+base_config = "configs/cora.toml"   # experiment config used by every stage
+output_root = "artifacts/gpu_checks" # one timestamped directory per invocation unless --out is given
+device = "cuda"                      # "cuda" | "auto" | "cpu" ("cuda" stops early if no GPU is visible)
+# Stages, in order. A finished stage leaves a marker file and is skipped when the same --out is reused.
+#   env        : versions, GPU name, CUDA check
+#   tests      : full pytest suite (CPU-only tests, ~1 min)
+#   smoke      : short GPU run of both programs with the [smoke] overrides (a few minutes)
+#   experiment : full config-driven Cora run (scripts/run_experiment.py)
+#   ensemble   : validation diagnostic with [ensemble] members (scripts/diagnose_bootstrap_ensemble.py)
+#   pack       : zip of the output directory to send back
+stages = ["env", "tests", "smoke", "experiment", "ensemble", "pack"]
+
+[smoke]
+# Overrides applied to base_config for the smoke stage only (section.key = value).
+"autoencoder.max_epochs" = 30
+"autoencoder.patience" = 10
+"denoiser.epochs" = 30
+"community.max_epochs" = 5
+"perturbation.series" = 2
+"recovery.reconstructions" = 2
+ensemble_members = 2
+
+[ensemble]
+# Decision 11: K = 10 members, seed_only (member 0 = the current single model).
+modes = ["seed_only"]
+members = 10
+fraction = 0.8          # subsample mode only
+jobs = 1                # members trained in parallel processes; on one GPU 1-2
+seed = 20261118         # pairwise reference draws of the analysis

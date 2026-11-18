@@ -19,6 +19,9 @@ Example (both CPUs, members trained two at a time):
     python scripts/diagnose_bootstrap_ensemble.py --config configs/cora.toml \
         --modes seed_only subsample --members 5 --jobs 2 \
         --out artifacts/diagnostics/bootstrap_ensemble
+GPU (one member at a time; scripts/run_gpu_checks.py calls it this way):
+    python scripts/diagnose_bootstrap_ensemble.py --config configs/cora.toml --device cuda \
+        --modes seed_only --members 10 --jobs 1 --out artifacts/diagnostics/bootstrap_ensemble_gpu
 """
 
 from __future__ import annotations
@@ -46,14 +49,15 @@ def train_member(args) -> None:
     from scripts.sweep_conditional import _setup
     from stability.bootstrap_ensemble import member_seed, member_split
     from stability.edge_recovery_experiment import recovery_seed
-    from stability.model_training import normalized_adjacency, train_models
+    from stability.model_training import normalized_adjacency, resolve_device, train_models
     from stability.validation_recovery import VALIDATION_SERIES_INDEX
 
     started = time.time()
     raw = tomllib.loads(args.config.read_text(encoding="utf-8"))
     config, graph, split = _setup(raw)
-    torch.set_num_threads(1)
-    device = torch.device("cpu")
+    device = resolve_device(args.device)
+    if device.type == "cpu":
+        torch.set_num_threads(1)  # members train in parallel processes (--jobs)
     config = config.with_overrides(
         model={"seed": member_seed(config.model.seed, args.mode, args.member)},
         community={"seed": member_seed(config.community.seed, args.mode, args.member)},
@@ -62,27 +66,28 @@ def train_member(args) -> None:
     models = train_models(graph, msplit, config, device)
     rec = config.recovery
     adjacency = normalized_adjacency(graph.node_count, split.train, device)  # input: ALL train edges
-    pairs = torch.as_tensor(np.r_[split.val, split.val_negatives])
+    pairs = torch.as_tensor(np.r_[split.val, split.val_negatives], device=device)
+    features = graph.features.to(device)
     labels, centers = models.context.labels, models.context.centers
     with torch.no_grad():
-        embeddings = models.encoder.encode(graph.features, adjacency)[2]
-        base = models.encoder.decode(embeddings, pairs).numpy()
+        embeddings = models.encoder.encode(features, adjacency)[2]
+        base = models.encoder.decode(embeddings, pairs).cpu().numpy()
         clamp = models.encoder.decode(
-            models.denoiser.shrink_to_prototype(embeddings, labels, centers), pairs).numpy()
+            models.denoiser.shrink_to_prototype(embeddings, labels, centers), pairs).cpu().numpy()
         diffusion = []
         for k in range(rec.reconstructions):
-            generator = torch.Generator().manual_seed(recovery_seed(rec.seed, VALIDATION_SERIES_INDEX, k))
+            generator = torch.Generator(device=device).manual_seed(recovery_seed(rec.seed, VALIDATION_SERIES_INDEX, k))
             recovered = models.denoiser.sample_from_tstar(
                 damaged_embeddings=embeddings, damaged_adjacency=adjacency, labels=labels,
                 prototypes=centers, t_star=rec.t_star, generator=generator)
-            diffusion.append(models.encoder.decode(recovered, pairs).numpy())
+            diffusion.append(models.encoder.decode(recovered, pairs).cpu().numpy())
     history = {k: v for k, v in models.history.items() if not isinstance(v, list)}
     np.savez_compressed(
         _member_file(args.out, args.mode, args.member),
         diffusion=np.stack(diffusion).astype(np.float64), no_diffusion=base.astype(np.float64),
         clamp_only=clamp.astype(np.float64), train_edges_used=len(msplit.train),
         model_seed=config.model.seed, community_seed=config.community.seed,
-        seconds=time.time() - started, history=json.dumps(history, default=str))
+        seconds=time.time() - started, history=json.dumps(history, default=str), device=str(device))
     print(f"{args.mode} member {args.member}: {len(msplit.train)} train edges, "
           f"{time.time() - started:.0f}s", flush=True)
 
@@ -163,6 +168,8 @@ def main() -> None:
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--seed", type=int, default=20261118, help="pairwise reference draws")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="cpu",
+                        help="training device of every member (cpu: one thread per member)")
     parser.add_argument("--mode", help=argparse.SUPPRESS)       # worker: train one member
     parser.add_argument("--member", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -181,7 +188,7 @@ def main() -> None:
             log = open(args.out / f"{mode}_member{m}.log", "w")
             running.append(subprocess.Popen(
                 [sys.executable, __file__, "--config", str(args.config), "--out", str(args.out),
-                 "--fraction", str(args.fraction), "--mode", mode, "--member", str(m)],
+                 "--fraction", str(args.fraction), "--device", args.device, "--mode", mode, "--member", str(m)],
                 stdout=log, stderr=subprocess.STDOUT))
         time.sleep(5)
         for process in [p for p in running if p.poll() is not None]:
@@ -194,6 +201,7 @@ def main() -> None:
 
     from scripts.sweep_conditional import _setup
     from stability.edge_recovery_experiment import environment_record
+    from stability.model_training import resolve_device
 
     raw = tomllib.loads(args.config.read_text(encoding="utf-8"))
     config, _, split = _setup(raw)
@@ -201,7 +209,7 @@ def main() -> None:
     result = analyze(args, y)
     (args.out / "bootstrap_ensemble.json").write_text(json.dumps({
         "arguments": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
-        "config": config.to_dict(), "environment": environment_record(__import__("torch").device("cpu")), "results": result,
+        "config": config.to_dict(), "environment": environment_record(resolve_device(args.device)), "results": result,
     }, indent=2, default=str))
     print(f"wrote {args.out / 'bootstrap_ensemble.json'}")
 
