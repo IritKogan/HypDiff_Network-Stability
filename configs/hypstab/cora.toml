@@ -58,3 +58,30 @@ seed = 20261118
 [clamp]
 # clamp_only baseline: standardised tangent coordinates at the community centre clipped to [-clip, clip]
 clip = 1.0
+
+[diffusion]
+# Paper values (Fu et al. 2024; experiment E1 2026-11-24: same validation quality as the old
+# T = 200 / delta = 1 / "upstream" noise, closer to the book). Old code: 200 / 1.0 / "upstream".
+timesteps = 1000                         # T
+radial_delta = 0.4                       # delta of the radial term a_t = sqrt(abar_t) + delta * tanh(t / 500)
+angular_noise = "folded"                 # "folded": sgn(dir) * |eps| (paper App. C.1) | "upstream": sgn(dir) * eps
+clip_x0 = true                           # clip the predicted standardised x0 to [-1, 1] (HypDiff code)
+
+[denoiser]
+# Residual GCN trained for edge reconstruction (Decision 8): per epoch drop U(0, train_max_drop) of the
+# TRAIN edges, encode (frozen encoder), noise to t < train_t_max, one denoising step, BCE through the
+# frozen decoder on dropped + kept train edges vs sampled non-edges (never val negatives / control pairs).
+seed = 20261121
+hidden_dim = 128
+layers = 3
+epochs = 5000
+learning_rate = 0.001
+train_max_drop = 0.4
+train_t_max = 40                         # = round(t_star * 8 / 7), as in E1 (old: t_star 7, train_t_max 8)
+nonfinite_max_skips = 50                 # epochs with non-finite loss / gradients skipped (Decision 4)
+
+[recovery]
+seed = 20261120
+t_star = 35                              # same noise level as the old t* = 7 at T = 200 (s_t ~ 0.13); E1: all t* equal
+reconstructions = 10                     # K per damaged graph
+sampler = "one_step"                     # x0 predicted directly from x_t* (Decision 8); "iterative": Stage 4b

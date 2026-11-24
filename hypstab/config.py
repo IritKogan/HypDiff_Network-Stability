@@ -26,6 +26,8 @@ DEVICES = ("auto", "cpu", "cuda")
 MANIFOLDS = ("poincare",)
 DATASETS = ("Cora", "CiteSeer", "PubMed")
 ACTIVATIONS = ("relu", "leaky_relu", "elu", "tanh", "identity")  # hypstab/models/hgcn.py
+ANGULAR_NOISE = ("upstream", "folded")                            # hypstab/diffusion/model.py
+SAMPLERS = ("one_step",)                                          # "iterative" added in Stage 4b
 
 
 class ConfigError(ValueError):
@@ -153,6 +155,55 @@ class ClampSection:
 
 
 @dataclass(frozen=True)
+class DiffusionSection:
+    timesteps: int
+    radial_delta: float
+    angular_noise: str
+    clip_x0: bool
+
+    def validate(self) -> None:
+        if self.timesteps < 2:
+            raise ConfigError(f"diffusion.timesteps must be >= 2, got {self.timesteps}")
+        if not (math.isfinite(self.radial_delta) and self.radial_delta >= 0):
+            raise ConfigError(f"diffusion.radial_delta must be >= 0, got {self.radial_delta}")
+        _choice("diffusion.angular_noise", self.angular_noise, ANGULAR_NOISE)
+
+
+@dataclass(frozen=True)
+class DenoiserSection:
+    seed: int
+    hidden_dim: int
+    layers: int
+    epochs: int
+    learning_rate: float
+    train_max_drop: float
+    train_t_max: int
+    nonfinite_max_skips: int
+
+    def validate(self) -> None:
+        for name in ("hidden_dim", "layers", "epochs", "train_t_max"):
+            if getattr(self, name) < 1:
+                raise ConfigError(f"denoiser.{name} must be >= 1, got {getattr(self, name)}")
+        if not 0 < self.train_max_drop < 1:
+            raise ConfigError(f"denoiser.train_max_drop must be in (0, 1), got {self.train_max_drop}")
+        if self.learning_rate <= 0 or self.seed < 0 or self.nonfinite_max_skips < 0:
+            raise ConfigError("denoiser.learning_rate must be > 0, seed >= 0, nonfinite_max_skips >= 0")
+
+
+@dataclass(frozen=True)
+class RecoverySection:
+    seed: int
+    t_star: int
+    reconstructions: int
+    sampler: str
+
+    def validate(self) -> None:
+        _choice("recovery.sampler", self.sampler, SAMPLERS)
+        if self.reconstructions < 1 or self.seed < 0 or self.t_star < 0:
+            raise ConfigError("recovery.reconstructions must be >= 1, seed >= 0, t_star >= 0")
+
+
+@dataclass(frozen=True)
 class HypstabConfig:
     run: RunSection
     geometry: GeometrySection
@@ -162,10 +213,29 @@ class HypstabConfig:
     decoder: DecoderSection
     community: CommunitySection
     clamp: ClampSection
+    diffusion: DiffusionSection
+    denoiser: DenoiserSection
+    recovery: RecoverySection
 
     def validate(self) -> None:
         for f in fields(self):
             getattr(self, f.name).validate()
+        # Cross-section checks.
+        from hypstab.diffusion.schedule import DiffusionSchedule
+
+        schedule = DiffusionSchedule(self.diffusion.timesteps, self.diffusion.radial_delta,
+                                     self.geometry.curvature)
+        try:
+            schedule.check_t_star(self.recovery.t_star)
+        except ValueError as error:
+            raise ConfigError(f"recovery.t_star: {error}") from None
+        if self.denoiser.train_t_max > self.diffusion.timesteps:
+            raise ConfigError("denoiser.train_t_max must be <= diffusion.timesteps")
+        if self.recovery.t_star >= self.denoiser.train_t_max:
+            raise ConfigError(
+                f"recovery.t_star = {self.recovery.t_star} must be < denoiser.train_t_max = "
+                f"{self.denoiser.train_t_max} (the denoiser is trained on steps 0 .. train_t_max - 1)"
+            )
 
 
 # --------------------------------------------------------------------------- loading
