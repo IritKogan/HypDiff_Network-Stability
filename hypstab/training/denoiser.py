@@ -1,11 +1,14 @@
 """Edge-reconstruction training of the diffusion denoiser (Decision 8), TRAIN edges only.
 
-Per epoch:
+Per epoch (training = "edge_reconstruction"):
 1. drop a fraction f ~ U(0, train_max_drop) of the train edges;
 2. encode the remaining train graph with the FROZEN encoder;
 3. one noise + denoise step at random per-node steps t in [0, train_t_max);
 4. loss = BCE(dropped train edges -> 1) + BCE(kept train edges -> 1)
           + BCE(sampled non-edges -> 0), through the FROZEN Fermi-Dirac decoder.
+training = "unrolled" (experiment E2): step 3 is replaced by noising to t* and running the
+iterative reverse chain (recovery.steps strided steps, differentiable), i.e. exactly the
+recovery procedure; the loss is on its final output.
 Non-edges never include validation negatives or control pairs; validation and
 pool edges are never used (Decision 6). Communities come from the train graph.
 
@@ -25,7 +28,7 @@ import torch.nn.functional as F
 from hypstab.config import HypstabConfig
 from hypstab.data.graph import GraphData
 from hypstab.data.split import EdgeSplit, pair_keys, sample_non_edges
-from hypstab.diffusion.model import HyperbolicDiffusion
+from hypstab.diffusion.model import HyperbolicDiffusion, sampling_steps
 from hypstab.diffusion.schedule import DiffusionSchedule
 from hypstab.models.hgcn import normalized_adjacency
 from hypstab.training.autoencoder import HyperbolicAutoencoder
@@ -78,6 +81,7 @@ def train_denoiser(
     forbidden = split.forbidden_negative_keys()
     features = graph.features.to(device)
     labels, centers = context.labels.to(device), context.centers.to(device)
+    chain = sampling_steps(config.recovery.t_star, config.recovery.steps) if den.training == "unrolled" else None
 
     autoencoder.eval()
     frozen = [p.requires_grad for p in autoencoder.parameters()]
@@ -98,8 +102,11 @@ def train_denoiser(
             adjacency = normalized_adjacency(graph.node_count, kept_edges, device)
             with torch.no_grad():
                 damaged = autoencoder.encode(features, adjacency)
-            t = torch.randint(0, den.train_t_max, (graph.node_count,), device=device, generator=t_generator)
-            recovered = diffusion.denoise_once(damaged, adjacency, labels, centers, t, noise_generator)
+            if den.training == "unrolled":
+                recovered = diffusion.denoise_chain(damaged, adjacency, labels, centers, chain, noise_generator)
+            else:
+                t = torch.randint(0, den.train_t_max, (graph.node_count,), device=device, generator=t_generator)
+                recovered = diffusion.denoise_once(damaged, adjacency, labels, centers, t, noise_generator)
             negatives = sample_non_edges(len(split.train), graph.node_count, forbidden, negative_rng)
             if audit:
                 seen["adjacency"].append(pair_keys(kept_edges, graph.node_count))

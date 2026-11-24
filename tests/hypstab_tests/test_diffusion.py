@@ -213,7 +213,9 @@ def test_recovery_matches_old_code(angular, T, delta, t_star):
           "recovery": {"t_star": 160}}, "past the minimum"),
         ({"denoiser": {"train_t_max": 2000}}, "train_t_max must be <="),
         ({"diffusion": {"angular_noise": "isotropic"}}, "diffusion.angular_noise"),
-        ({"recovery": {"sampler": "iterative"}}, "recovery.sampler"),
+        ({"recovery": {"sampler": "ancestral"}}, "recovery.sampler"),
+        ({"recovery": {"steps": 37}}, "recovery.steps"),
+        ({"denoiser": {"training": "unrolled"}}, "use recovery.sampler"),
         ({"denoiser": {"train_max_drop": 1.0}}, "train_max_drop"),
     ],
 )

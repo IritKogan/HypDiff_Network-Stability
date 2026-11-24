@@ -1,0 +1,43 @@
+# Experiment E2 (Stage 4b): multi-step denoising (book: iterative reverse process).
+# Validation protocol only. Base config: configs/hypstab/cora.toml (paper diffusion values).
+# One shared autoencoder + communities; one denoiser per trained variant; sampling-only variants
+# reuse the denoiser of `denoiser_from`. Same criteria as E1 (configs/e1_paper_schedule.toml).
+# Run: python scripts/hypstab_e2.py --plan configs/hypstab/e2.toml [--run-dir DIR] [--autoencoder-from DIR]
+
+[criteria]
+target_fpr = 0.05          # diagnostic p_e threshold on the pooled validation negatives (as in E1)
+quality_tolerance = 0.0    # quality: AUC of the mean probability >= clamp_only AUC - tolerance
+informative_auc = 0.55     # informative: stratified AUC of p_e given the own mean >= this
+min_ll_gain = 0.001        #              AND log-likelihood gain of p_e over the mean >= this
+
+[[variant]]
+name = "one_step_t35"
+description = "Stage 4a default: one-step training and sampling, t* = 35"
+overrides = {}
+
+[[variant]]
+name = "iterative_t35"
+description = "same denoiser, iterative sampling in 8 strided steps (35, 30, ..., 0)"
+denoiser_from = "one_step_t35"
+overrides = { "recovery.sampler" = "iterative" }
+
+[[variant]]
+name = "unrolled_t35"
+description = "E2: trained through the 8-step chain from t* = 35, iterative sampling"
+overrides = { "denoiser.training" = "unrolled", "recovery.sampler" = "iterative" }
+
+[[variant]]
+name = "one_step_t150"
+description = "one step, more noise: t* = 150 (train_t_max = round(150 * 8 / 7))"
+overrides = { "recovery.t_star" = 150, "denoiser.train_t_max" = 171 }
+
+[[variant]]
+name = "iterative_t150"
+description = "same denoiser as one_step_t150, iterative sampling in 8 strided steps"
+denoiser_from = "one_step_t150"
+overrides = { "recovery.t_star" = 150, "denoiser.train_t_max" = 171, "recovery.sampler" = "iterative" }
+
+[[variant]]
+name = "unrolled_t150"
+description = "E2: trained through the 8-step chain from t* = 150, iterative sampling"
+overrides = { "recovery.t_star" = 150, "denoiser.train_t_max" = 171, "denoiser.training" = "unrolled", "recovery.sampler" = "iterative" }

@@ -13,13 +13,24 @@ Recovery of a damaged graph (embeddings h of the damaged graph, its adjacency A)
 3. The denoiser predicts x_0 from (x_t, A, t / T); optionally clipped to [-1, 1] (clip_x0).
 4. Back to the ball: h' = expmap_{mu_i}( x_0 * std(v) + mean(v) ).
 
-Sampler "one_step" (Decision 8): x_0 is predicted directly from x_{t*}, the same single
-step the network is trained on. The iterative reverse chain (book; experiment E2) is
-added in Stage 4b.
+Samplers:
+- "one_step" (Decision 8): x_0 is predicted directly from x_{t*}, the same single step the
+  network is trained on.
+- "iterative" (book: iterative reverse process; Stage 4b): ``steps`` network calls on the
+  strided steps t* = t_1 > t_2 > ... > t_n = 0 (``sampling_steps``). At each step
+      x0_hat  = f(x_t, A, t / T)                         (clipped if clip_x0)
+      eps_hat = (x_t - a_t x0_hat) / s_t                 (exact inverse of q_sample, Decision 5)
+      x_prev  = a_prev x0_hat + s_prev eps_hat           (deterministic, DDIM eta = 0)
+  and the prediction at t = 0 is the result. With steps = t* + 1 this is the old code's
+  "iterative" sampler (every step). HypDiff's original noise formula ignores the radial
+  term of a_t and is not offered (found wrong, Decision 5).
+- Training "unrolled" (experiment E2): the same chain from t*, differentiable, loss on the
+  final output (hypstab/training/denoiser.py).
 """
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -29,6 +40,17 @@ from hypstab.geometry import poincare as pb
 from hypstab.models.clamp import standardize
 
 ANGULAR_NOISE = ("upstream", "folded")
+SAMPLERS = ("one_step", "iterative")
+
+
+def sampling_steps(t_star: int, steps: int) -> list[int]:
+    """Strided steps from t* down to 0 (both included), at most ``steps`` of them, distinct.
+
+    E.g. t* = 35, steps = 8 -> [35, 30, 25, 20, 15, 10, 5, 0]; steps = t* + 1 -> every step."""
+    if steps < 2:
+        raise ValueError("an iterative chain needs steps >= 2")
+    grid = np.unique(np.round(np.linspace(t_star, 0, steps)).astype(int))[::-1]
+    return [int(t) for t in grid]
 
 
 class HyperbolicDiffusion(nn.Module):
@@ -88,9 +110,40 @@ class HyperbolicDiffusion(nn.Module):
         x_t = self.q_sample(x0, t, self.angular_noise_sample(x0, labels, centers, generator))
         return self.to_ball(self.predict_x0(x_t, adjacency, t), mean, std, node_centers)
 
+    def reverse_chain(self, x_t: Tensor, adjacency: Tensor, steps: list[int]) -> Tensor:
+        """Deterministic strided reverse chain over ``steps`` (descending, ending at 0); returns x0."""
+        if steps[-1] != 0 or any(a <= b for a, b in zip(steps, steps[1:])):
+            raise ValueError("steps must be strictly decreasing and end at 0")
+        n = x_t.shape[0]
+        for i, t in enumerate(steps):
+            t_vec = torch.full((n,), t, dtype=torch.long, device=x_t.device)
+            x0 = self.predict_x0(x_t, adjacency, t_vec)
+            if t == 0:
+                return x0
+            a_t, s_t = self.schedule.coefficients(t_vec, x_t.dtype)
+            prev = torch.full((n,), steps[i + 1], dtype=torch.long, device=x_t.device)
+            a_p, s_p = self.schedule.coefficients(prev, x_t.dtype)
+            eps_hat = (x_t - a_t * x0) / s_t
+            x_t = a_p * x0 + s_p * eps_hat
+        raise AssertionError("unreachable")
+
+    def denoise_chain(self, embeddings: Tensor, adjacency: Tensor, labels: Tensor, centers: Tensor,
+                      steps: list[int], generator: torch.Generator | None = None) -> Tensor:
+        """Noise to steps[0] = t*, run the reverse chain, return ball points (differentiable)."""
+        x0, mean, std, node_centers = self.tangent_coordinates(embeddings, labels, centers)
+        t = torch.full((x0.shape[0],), steps[0], dtype=torch.long, device=x0.device)
+        x_t = self.q_sample(x0, t, self.angular_noise_sample(x0, labels, centers, generator))
+        return self.to_ball(self.reverse_chain(x_t, adjacency, steps), mean, std, node_centers)
+
     def recover(self, embeddings: Tensor, adjacency: Tensor, labels: Tensor, centers: Tensor,
-                t_star: int, generator: torch.Generator | None) -> Tensor:
-        """Recovery from t* (sampler "one_step")."""
+                t_star: int, generator: torch.Generator | None, sampler: str = "one_step",
+                steps: int = 2) -> Tensor:
+        """Recovery from t* with the given sampler ("one_step" | "iterative" with ``steps`` calls)."""
         self.schedule.check_t_star(t_star)
-        t = torch.full((embeddings.shape[0],), int(t_star), dtype=torch.long, device=embeddings.device)
-        return self.denoise_once(embeddings, adjacency, labels, centers, t, generator)
+        if sampler == "one_step":
+            t = torch.full((embeddings.shape[0],), int(t_star), dtype=torch.long, device=embeddings.device)
+            return self.denoise_once(embeddings, adjacency, labels, centers, t, generator)
+        if sampler == "iterative":
+            return self.denoise_chain(embeddings, adjacency, labels, centers,
+                                      sampling_steps(int(t_star), steps), generator)
+        raise ValueError(f"sampler must be one of {SAMPLERS}")

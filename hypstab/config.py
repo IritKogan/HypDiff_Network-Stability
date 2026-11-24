@@ -27,7 +27,8 @@ MANIFOLDS = ("poincare",)
 DATASETS = ("Cora", "CiteSeer", "PubMed")
 ACTIVATIONS = ("relu", "leaky_relu", "elu", "tanh", "identity")  # hypstab/models/hgcn.py
 ANGULAR_NOISE = ("upstream", "folded")                            # hypstab/diffusion/model.py
-SAMPLERS = ("one_step",)                                          # "iterative" added in Stage 4b
+SAMPLERS = ("one_step", "iterative")                              # hypstab/diffusion/model.py
+DENOISER_TRAINING = ("edge_reconstruction", "unrolled")            # hypstab/training/denoiser.py
 
 
 class ConfigError(ValueError):
@@ -172,6 +173,7 @@ class DiffusionSection:
 @dataclass(frozen=True)
 class DenoiserSection:
     seed: int
+    training: str
     hidden_dim: int
     layers: int
     epochs: int
@@ -181,6 +183,7 @@ class DenoiserSection:
     nonfinite_max_skips: int
 
     def validate(self) -> None:
+        _choice("denoiser.training", self.training, DENOISER_TRAINING)
         for name in ("hidden_dim", "layers", "epochs", "train_t_max"):
             if getattr(self, name) < 1:
                 raise ConfigError(f"denoiser.{name} must be >= 1, got {getattr(self, name)}")
@@ -196,11 +199,14 @@ class RecoverySection:
     t_star: int
     reconstructions: int
     sampler: str
+    steps: int
 
     def validate(self) -> None:
         _choice("recovery.sampler", self.sampler, SAMPLERS)
         if self.reconstructions < 1 or self.seed < 0 or self.t_star < 0:
             raise ConfigError("recovery.reconstructions must be >= 1, seed >= 0, t_star >= 0")
+        if not 2 <= self.steps <= self.t_star + 1:
+            raise ConfigError(f"recovery.steps must be in [2, t_star + 1], got {self.steps}")
 
 
 @dataclass(frozen=True)
@@ -231,6 +237,9 @@ class HypstabConfig:
             raise ConfigError(f"recovery.t_star: {error}") from None
         if self.denoiser.train_t_max > self.diffusion.timesteps:
             raise ConfigError("denoiser.train_t_max must be <= diffusion.timesteps")
+        if self.denoiser.training == "unrolled" and self.recovery.sampler != "iterative":
+            raise ConfigError("denoiser.training = 'unrolled' trains the iterative chain; "
+                              "use recovery.sampler = 'iterative'")
         if self.recovery.t_star >= self.denoiser.train_t_max:
             raise ConfigError(
                 f"recovery.t_star = {self.recovery.t_star} must be < denoiser.train_t_max = "

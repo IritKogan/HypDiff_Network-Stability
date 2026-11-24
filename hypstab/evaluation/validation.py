@@ -58,22 +58,31 @@ def validation_report(
         report[name] = {"auc": roc_auc(model.edge_logits(points, pos).cpu().numpy(),
                                        model.edge_logits(points, neg).cpu().numpy())}
     if diffusion is not None:
-        diffusion.eval()
         rec = config.recovery
-        prob_pos, prob_neg = [], []
-        for k in range(rec.reconstructions):
-            generator = torch.Generator(device=device)
-            generator.manual_seed(recovery_seed(rec.seed, VALIDATION_SERIES, k))
-            recovered = diffusion.recover(embeddings, train_adjacency, context.labels, context.centers,
-                                          rec.t_star, generator)
-            prob_pos.append(torch.sigmoid(model.edge_logits(recovered, pos)).cpu().numpy())
-            prob_neg.append(torch.sigmoid(model.edge_logits(recovered, neg)).cpu().numpy())
-        prob_pos, prob_neg = np.stack(prob_pos), np.stack(prob_neg)
+        prob_pos, prob_neg = diffusion_probabilities(model, diffusion, embeddings, train_adjacency, context,
+                                                     config, pos, neg)
         report["diffusion"] = {
             "auc": roc_auc(prob_pos.mean(0), prob_neg.mean(0)),
             "auc_per_reconstruction_mean": float(np.mean([roc_auc(p, n) for p, n in zip(prob_pos, prob_neg)])),
             "probability_std_across_K_mean": float(np.concatenate([prob_pos, prob_neg], 1).std(0).mean()),
             "K": rec.reconstructions,
             "t_star": rec.t_star,
+            "sampler": rec.sampler,
         }
     return report
+
+
+@torch.no_grad()
+def diffusion_probabilities(model, diffusion, embeddings, adjacency, context, config, pos, neg):
+    """(K, pairs) edge probabilities of ``pos`` / ``neg`` over the K validation reconstructions."""
+    diffusion.eval()
+    rec = config.recovery
+    prob_pos, prob_neg = [], []
+    for k in range(rec.reconstructions):
+        generator = torch.Generator(device=embeddings.device)
+        generator.manual_seed(recovery_seed(rec.seed, VALIDATION_SERIES, k))
+        recovered = diffusion.recover(embeddings, adjacency, context.labels, context.centers,
+                                      rec.t_star, generator, rec.sampler, rec.steps)
+        prob_pos.append(torch.sigmoid(model.edge_logits(recovered, pos)).cpu().numpy())
+        prob_neg.append(torch.sigmoid(model.edge_logits(recovered, neg)).cpu().numpy())
+    return np.stack(prob_pos), np.stack(prob_neg)

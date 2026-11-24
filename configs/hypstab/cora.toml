@@ -72,6 +72,8 @@ clip_x0 = true                           # clip the predicted standardised x0 to
 # TRAIN edges, encode (frozen encoder), noise to t < train_t_max, one denoising step, BCE through the
 # frozen decoder on dropped + kept train edges vs sampled non-edges (never val negatives / control pairs).
 seed = 20261121
+training = "edge_reconstruction"         # one denoising step at t < train_t_max (Decision 8)
+                                         # | "unrolled": through the iterative chain from t* (experiment E2)
 hidden_dim = 128
 layers = 3
 epochs = 5000
@@ -84,4 +86,6 @@ nonfinite_max_skips = 50                 # epochs with non-finite loss / gradien
 seed = 20261120
 t_star = 35                              # same noise level as the old t* = 7 at T = 200 (s_t ~ 0.13); E1: all t* equal
 reconstructions = 10                     # K per damaged graph
-sampler = "one_step"                     # x0 predicted directly from x_t* (Decision 8); "iterative": Stage 4b
+sampler = "one_step"                     # x0 predicted directly from x_t* (Decision 8)
+                                         # | "iterative": reverse chain t* -> 0 in `steps` network calls (book)
+steps = 8                                # iterative only: strided steps, e.g. t* 35 -> 35, 30, ..., 5, 0
