@@ -24,6 +24,8 @@ from typing import Any
 
 DEVICES = ("auto", "cpu", "cuda")
 MANIFOLDS = ("poincare",)
+DATASETS = ("Cora", "CiteSeer", "PubMed")
+ACTIVATIONS = ("relu", "leaky_relu", "elu", "tanh", "identity")  # hypstab/models/hgcn.py
 
 
 class ConfigError(ValueError):
@@ -57,9 +59,82 @@ class GeometrySection:
 
 
 @dataclass(frozen=True)
+class DataSection:
+    dataset: str
+    root: str
+    download: bool
+
+    def validate(self) -> None:
+        _choice("data.dataset", self.dataset, DATASETS)
+
+
+@dataclass(frozen=True)
+class SplitSection:
+    seed: int
+    train_fraction: float
+    val_fraction: float
+    pool_fraction: float
+    control_pairs: int
+
+    def validate(self) -> None:
+        for name in ("train_fraction", "val_fraction", "pool_fraction"):
+            value = getattr(self, name)
+            if not 0 < value < 1:
+                raise ConfigError(f"split.{name} must be in (0, 1), got {value}")
+        total = self.train_fraction + self.val_fraction + self.pool_fraction
+        if not math.isclose(total, 1.0, abs_tol=1e-9):
+            raise ConfigError(f"split fractions must sum to 1, got {total}")
+        if self.control_pairs < 1 or self.seed < 0:
+            raise ConfigError("split.control_pairs must be >= 1 and split.seed >= 0")
+
+
+@dataclass(frozen=True)
+class EncoderSection:
+    seed: int
+    dim: int
+    num_layers: int
+    activation: str
+    final_activation: str
+    dropout: float
+    bias: bool
+    max_epochs: int
+    patience: int
+    learning_rate: float
+    weight_decay: float
+    negatives_per_positive: int
+
+    def validate(self) -> None:
+        _choice("encoder.activation", self.activation, ACTIVATIONS)
+        _choice("encoder.final_activation", self.final_activation, ACTIVATIONS)
+        for name in ("dim", "num_layers", "max_epochs", "patience", "negatives_per_positive"):
+            if getattr(self, name) < 1:
+                raise ConfigError(f"encoder.{name} must be >= 1, got {getattr(self, name)}")
+        if not 0 <= self.dropout < 1:
+            raise ConfigError(f"encoder.dropout must be in [0, 1), got {self.dropout}")
+        if self.learning_rate <= 0 or self.weight_decay < 0 or self.seed < 0:
+            raise ConfigError("encoder.learning_rate must be > 0, weight_decay >= 0, seed >= 0")
+
+
+@dataclass(frozen=True)
+class DecoderSection:
+    fermi_dirac_r: float
+    fermi_dirac_t: float
+
+    def validate(self) -> None:
+        if not (math.isfinite(self.fermi_dirac_t) and self.fermi_dirac_t > 0):
+            raise ConfigError(f"decoder.fermi_dirac_t must be > 0, got {self.fermi_dirac_t}")
+        if not math.isfinite(self.fermi_dirac_r):
+            raise ConfigError("decoder.fermi_dirac_r must be finite")
+
+
+@dataclass(frozen=True)
 class HypstabConfig:
     run: RunSection
     geometry: GeometrySection
+    data: DataSection
+    split: SplitSection
+    encoder: EncoderSection
+    decoder: DecoderSection
 
     def validate(self) -> None:
         for f in fields(self):

@@ -12,3 +12,37 @@ seed = 20261124                          # global seed (torch, numpy, random)
 [geometry]
 manifold = "poincare"                    # only "poincare" for now (Lorentz: later option)
 curvature = 1.0                          # c > 0; ball radius 1/sqrt(c) (same convention as the old code)
+
+[data]
+dataset = "Cora"                         # Planetoid Cora, row-normalised features
+root = "data"
+download = true
+
+[split]
+# Same values as configs/cora.toml -> the same split as the old code (tested).
+# Pool edges are the only edges ever removed; they are never seen in training.
+seed = 20261116
+train_fraction = 0.5
+val_fraction = 0.1
+pool_fraction = 0.4
+control_pairs = 20000                    # non-edge reference pairs; never training negatives
+
+[encoder]
+# HGCN, 2 layers as in the HypDiff paper. dim / dropout / weight_decay / learning_rate from our
+# Cora tuning on validation (Decision 7; paper values: dim 256, lr 0.001, L2 1e-5).
+seed = 20261117
+dim = 128
+num_layers = 2
+activation = "relu"                      # hidden layers
+final_activation = "relu"                # last layer (upstream HypDiff: relu)
+dropout = 0.7                            # on the weight matrices (as in HGCN)
+bias = false
+max_epochs = 2000
+patience = 200                           # early stopping on validation AUC
+learning_rate = 0.01
+weight_decay = 0.0005
+negatives_per_positive = 1               # resampled every epoch
+
+[decoder]
+fermi_dirac_r = 2.0                      # P(edge) = 1 / (exp((d^2 - r) / t) + 1), d = Poincare distance
+fermi_dirac_t = 1.0
