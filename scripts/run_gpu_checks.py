@@ -8,6 +8,8 @@ Runs, in order (configs/gpu_checks.toml, [run].stages):
              the K-model ensemble, paired (Decision 11)              -> runs/<run name>/
   ensemble   (optional, not in the default stages) validation-only
              ensemble diagnostic                                     -> ensemble/bootstrap_ensemble.json
+  e1         (configs/gpu_e1.toml) experiment E1: paper diffusion schedule + t* sweep, validation
+             only, scripts/diagnose_paper_schedule.py               -> e1/e1_summary.csv
   pack       zip of the whole output directory, to send back         -> <out>.zip
 
 Every stage logs to <out>/logs/<stage>.log and leaves <out>/stage_<name>.done when it finishes.
@@ -28,6 +30,7 @@ Then:
     python scripts/run_gpu_checks.py                       # all stages, new output directory
     python scripts/run_gpu_checks.py --out artifacts/gpu_checks/<dir>   # resume an interrupted run
     python scripts/run_gpu_checks.py --stages env smoke    # only some stages
+    python scripts/run_gpu_checks.py --plan configs/gpu_e1.toml   # experiment E1 (2026-11-24)
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ import tomllib
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-STAGES = ("env", "tests", "smoke", "experiment", "ensemble", "pack")
+STAGES = ("env", "tests", "smoke", "experiment", "ensemble", "e1", "pack")
 
 
 # ----------------------------------------------------------------------------- plan / config
@@ -63,12 +66,18 @@ def load_plan(path: Path) -> dict[str, Any]:
         raise ValueError(f"unknown stages {unknown}; expected a subset of {STAGES}")
     if run["device"] not in ("cuda", "auto", "cpu"):
         raise ValueError("[run].device must be 'cuda', 'auto' or 'cpu'")
-    ensemble = plan.get("ensemble", {})
-    for key in ("modes", "members", "fraction", "jobs", "seed"):
-        if key not in ensemble:
-            raise ValueError(f"[ensemble].{key} missing in {path}")
-    if int(ensemble["members"]) < 2:
-        raise ValueError("[ensemble].members must be >= 2")
+    # sections needed only by the stages that use them (configs/gpu_e1.toml has no [ensemble] / [smoke])
+    if "ensemble" in plan or "ensemble" in run["stages"]:
+        ensemble = plan.get("ensemble", {})
+        for key in ("modes", "members", "fraction", "jobs", "seed"):
+            if key not in ensemble:
+                raise ValueError(f"[ensemble].{key} missing in {path}")
+        if int(ensemble["members"]) < 2:
+            raise ValueError("[ensemble].members must be >= 2")
+    if "smoke" in run["stages"] and "smoke" not in plan:
+        raise ValueError(f"[smoke] missing in {path} (stage 'smoke' requested)")
+    if "e1" in run["stages"] and "plan" not in plan.get("e1", {}):
+        raise ValueError(f"[e1].plan missing in {path} (stage 'e1' requested)")
     return plan
 
 
@@ -115,7 +124,7 @@ def smoke_config(base: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
 
 def stage_commands(plan: dict[str, Any], out: Path, python: str = sys.executable) -> dict[str, list[list[str]]]:
     """Subprocess commands of the stages that run programs (run with cwd = repository root)."""
-    run, ens = plan["run"], plan["ensemble"]
+    run, ens = plan["run"], plan.get("ensemble")
     device = run["device"]
     base = str(ROOT / run["base_config"])
     smoke_toml = str(out / "smoke" / "smoke_config.toml")
@@ -126,7 +135,7 @@ def stage_commands(plan: dict[str, Any], out: Path, python: str = sys.executable
                 "--fraction", str(ens["fraction"]), "--jobs", str(ens["jobs"]),
                 "--seed", str(ens["seed"]), "--out", str(target)]
 
-    return {
+    commands = {
         "tests": [[python, "-m", "pytest", "-q", "-p", "no:warnings"]],
         "smoke": [
             [python, "scripts/run_experiment.py", "--config", smoke_toml, "--device", device,
@@ -134,8 +143,14 @@ def stage_commands(plan: dict[str, Any], out: Path, python: str = sys.executable
         ],
         "experiment": [[python, "scripts/run_experiment.py", "--config", base, "--device", device,
                         "--run-dir", str(out / "runs" / run["run_name"]), "--resume"]],
-        "ensemble": [ensemble(base, int(ens["members"]), out / "ensemble")],
     }
+    if ens is not None:
+        commands["ensemble"] = [ensemble(base, int(ens["members"]), out / "ensemble")]
+    if "e1" in plan:
+        commands["e1"] = [[python, "scripts/diagnose_paper_schedule.py", "--plan", str(ROOT / plan["e1"]["plan"]),
+                           "--device", device, "--out-dir", str(out / "e1"),
+                           "--log-every", str(plan["e1"].get("log_every", 500))]]
+    return commands
 
 
 # ----------------------------------------------------------------------------- execution
@@ -243,13 +258,14 @@ def main() -> None:
     out = args.out
     if out is None:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        out = Path(plan["run"]["output_root"]) / f"gpu_checks_{stamp}"
+        out = Path(plan["run"]["output_root"]) / f"{plan['run'].get('prefix', 'gpu_checks')}_{stamp}"
     out = out if out.is_absolute() else ROOT / out
     (out / "logs").mkdir(parents=True, exist_ok=True)
     shutil.copyfile(args.plan, out / "gpu_checks_plan.toml")
     base = tomllib.loads((ROOT / plan["run"]["base_config"]).read_text(encoding="utf-8"))
-    (out / "smoke").mkdir(exist_ok=True)
-    (out / "smoke" / "smoke_config.toml").write_text(dump_toml(smoke_config(base, plan)), encoding="utf-8")
+    if "smoke" in plan:
+        (out / "smoke").mkdir(exist_ok=True)
+        (out / "smoke" / "smoke_config.toml").write_text(dump_toml(smoke_config(base, plan)), encoding="utf-8")
     commands = stage_commands(plan, out)
     print(f"output directory: {out}\nstages: {stages}", flush=True)
 

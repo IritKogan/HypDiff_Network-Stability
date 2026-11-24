@@ -1,0 +1,21 @@
+# Experiment E1 on the students' GPU laptop (Stage -1 of claude/plan-from-scratch-2026-11-24.md).
+# One command (cmd, repository root):
+#   .venv\Scripts\python scripts\run_gpu_checks.py --plan configs\gpu_e1.toml
+# Resumable: if it stops, run the same command with --out <the printed output directory>.
+# The E1 variants and their parameters live in configs/e1_paper_schedule.toml (copied into the output).
+
+[run]
+base_config = "configs/cora.toml"   # used by the env / tests stages; E1 reads its own plan (below)
+output_root = "artifacts/gpu_checks"
+prefix = "gpu_e1"                    # output directory <output_root>/<prefix>_<UTC time>, zip next to it
+device = "cuda"
+run_name = "e1"                      # unused by these stages (required key of the runner)
+#   env   : versions, GPU name, CUDA / architecture check
+#   tests : full pytest suite (~1 min)
+#   e1    : scripts/diagnose_paper_schedule.py -> e1/e1_summary.csv, e1/e1_results.json (~30-45 min)
+#   pack  : zip of the output directory (send it back: copy it to the shared Desktop folder)
+stages = ["env", "tests", "e1", "pack"]
+
+[e1]
+plan = "configs/e1_paper_schedule.toml"
+log_every = 500                      # training progress lines (epochs)

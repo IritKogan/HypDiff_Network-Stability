@@ -12,6 +12,8 @@ from pathlib import Path
 import tomllib
 from typing import Any
 
+from stability.diffusion_schedule import check_t_star
+
 ATTACKS = ("random", "targeted_weighted", "targeted_deterministic")
 DEVICES = ("auto", "cpu", "cuda")
 NOISE_FORMULAS = ("exact", "upstream")
@@ -27,7 +29,6 @@ EDGE_DECISIONS = ("threshold", "bernoulli", "pairwise")
 TAU_MODES = ("fixed", "val_fpr")
 RECONSTRUCTION_SOURCES = ("noise", "ensemble")
 RESAMPLE_MODES = ("seed_only", "subsample", "bootstrap")  # stability/bootstrap_ensemble.py
-DIFFUSION_STEPS = 200  # upstream HypDiff num_timesteps (hard-coded upstream)
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ class DenoiserConfig:
     epochs: int
     learning_rate: float
     noise_formula: str
+    timesteps: int
     architecture: str
     hidden_dim: int
     layers: int
@@ -271,7 +273,8 @@ def _validate(config: ExperimentConfig) -> None:
     _require(den.hidden_dim > 0 and den.layers > 0, "denoiser.hidden_dim and layers must be positive")
     _require(den.radial_delta >= 0.0, "denoiser.radial_delta must be non-negative")
     _require(0.0 <= den.train_max_drop < 1.0, "denoiser.train_max_drop must be in [0, 1)")
-    _require(0 < den.train_t_max <= DIFFUSION_STEPS, f"denoiser.train_t_max must be in (0, {DIFFUSION_STEPS}]")
+    _require(den.timesteps >= 2, "denoiser.timesteps must be >= 2")
+    _require(0 < den.train_t_max <= den.timesteps, f"denoiser.train_t_max must be in (0, {den.timesteps}]")
     _require(den.edge_loss_weight >= 0.0, "denoiser.edge_loss_weight must be non-negative")
     _require(den.t_sampling in T_SAMPLING, f"denoiser.t_sampling in {T_SAMPLING}")
     _require(den.nonfinite_max_skips >= 0, "denoiser.nonfinite_max_skips must be non-negative")
@@ -315,7 +318,10 @@ def _validate(config: ExperimentConfig) -> None:
     )
 
     rec = config.recovery
-    _require(0 <= rec.t_star < DIFFUSION_STEPS, f"recovery.t_star must be in [0, {DIFFUSION_STEPS - 1}]")
+    try:  # [0, T) and not past the minimum of a_t (stability/diffusion_schedule.py)
+        check_t_star(rec.t_star, den.timesteps, den.radial_delta, model.curvature)
+    except ValueError as error:
+        raise ValueError(f"recovery.{error}") from None
     _require(0.0 <= rec.tau <= 1.0, "recovery.tau must be in [0, 1]")
     _require(rec.tau_mode in TAU_MODES, f"recovery.tau_mode in {TAU_MODES}")
     _require(rec.sampler in SAMPLERS, f"recovery.sampler in {SAMPLERS}")

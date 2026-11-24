@@ -1,0 +1,90 @@
+# Experiment E1 on the OLD code (Stage -1 of claude/plan-from-scratch-2026-11-24.md): early signal only.
+# Does HypDiff's paper diffusion schedule (T = 1000, delta = 0.4, folded angular noise) keep the recovery
+# quality, and does a stronger noise level t* make the K diffusion samples INFORMATIVE?
+# Validation protocol only (train edges as input; validation edges vs validation negatives). Pool and
+# control pairs are never touched. One encoder + community context (train edges only) shared by all
+# variants; each variant trains its own denoiser (current family: residual_gcn, edge_reconstruction,
+# one_step sampler). Script: scripts/diagnose_paper_schedule.py. Every parameter lives here or in
+# base_config; both are copied to the output directory.
+
+[run]
+base_config = "configs/cora.toml"
+reconstructions = 10      # K noise draws per variant (seeds as in stability/validation_recovery.py)
+strata = 10               # deciles of the model's own mean probability for the stratified AUC
+ll_folds = 5              # cross-validation folds of the log-likelihood gain
+
+[criteria]
+# Flags written next to the numbers (the decision stays with the students):
+# quality: auc_mean_probability >= auc_clamp_only - quality_tolerance
+# informative: stratified AUC of p_e given the own mean >= informative_auc AND ll gain >= min_ll_gain
+quality_tolerance = 0.0
+informative_auc = 0.55
+min_ll_gain = 0.001
+
+[smoke]
+# --smoke: a few-minute check of the whole sweep (CPU is fine). Results are meaningless.
+reconstructions = 3
+
+[smoke.overrides]
+"autoencoder.max_epochs" = 20
+"autoencoder.patience" = 5
+"denoiser.epochs" = 15
+"community.max_epochs" = 5
+
+# Variants: overrides of base_config (only [denoiser] and [recovery] keys: the encoder is shared).
+# train_t_max is matched to t* with the ratio of the previous default (t* = 7 -> train_t_max = 8).
+
+[[variant]]
+name = "baseline_T200_t7"
+description = "as in the last full GPU run: T=200, delta=1, angular upstream, t*=7, train_t_max=8"
+[variant.overrides]
+
+[[variant]]
+name = "paper_T1000_t35"
+description = "paper values only, same noise level as the baseline (s_t 0.127 vs 0.134): do the fixes hurt?"
+[variant.overrides]
+"denoiser.timesteps" = 1000
+"denoiser.radial_delta" = 0.4
+"denoiser.angular_noise" = "folded"
+"denoiser.train_t_max" = 40
+"recovery.t_star" = 35
+
+[[variant]]
+name = "paper_T1000_t75"
+description = "paper values, stronger noise"
+[variant.overrides]
+"denoiser.timesteps" = 1000
+"denoiser.radial_delta" = 0.4
+"denoiser.angular_noise" = "folded"
+"denoiser.train_t_max" = 86
+"recovery.t_star" = 75
+
+[[variant]]
+name = "paper_T1000_t150"
+description = "paper values, stronger noise"
+[variant.overrides]
+"denoiser.timesteps" = 1000
+"denoiser.radial_delta" = 0.4
+"denoiser.angular_noise" = "folded"
+"denoiser.train_t_max" = 171
+"recovery.t_star" = 150
+
+[[variant]]
+name = "paper_T1000_t250"
+description = "paper values, stronger noise"
+[variant.overrides]
+"denoiser.timesteps" = 1000
+"denoiser.radial_delta" = 0.4
+"denoiser.angular_noise" = "folded"
+"denoiser.train_t_max" = 286
+"recovery.t_star" = 250
+
+[[variant]]
+name = "paper_T1000_t500"
+description = "paper values, strong noise (s_t 0.96: x_t mostly noise)"
+[variant.overrides]
+"denoiser.timesteps" = 1000
+"denoiser.radial_delta" = 0.4
+"denoiser.angular_noise" = "folded"
+"denoiser.train_t_max" = 571
+"recovery.t_star" = 500

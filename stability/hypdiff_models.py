@@ -23,7 +23,9 @@ here, as a subclass, so that the diff against upstream is explicit:
       direction's orthant).
     * ``draw_noise`` / ``_denoise_from_tstar`` / ``sample_from_tstar``  new
       project methods for partial-noise recovery from t* < T.
-    * ``radial_delta`` (paper's delta, upstream hard-codes 1),
+    * ``radial_delta`` (paper's delta, upstream hard-codes 1), ``diffusion_timesteps`` (T, upstream
+      hard-codes 200, paper 1000; t* past the minimum of a_t is rejected, see
+      stability/diffusion_schedule.py),
       ``denoiser_architecture`` ("upstream_gcn" | "residual_gcn"), ``clip_x0``
       ``restoration_loss`` (damage-aware training), ``denoise_once``
       (edge-reconstruction training) and ``recovery_sampler`` ("iterative" =
@@ -68,6 +70,7 @@ from models.base_models import LPModel
 from models.direction_diffusion import diffusion, gcndec, get_alphas, mlp
 import math
 
+from stability.diffusion_schedule import check_t_star
 from stability.denoisers import (
     ConditionalGCNDenoiser,
     ConditionalResidualGCNDenoiser,
@@ -116,7 +119,11 @@ class StabilityDiffusion(diffusion):
         self.gcn.to(device)
         self.mlp = mlp(dim)
         self.mlp = self.mlp.to(device)
-        self.num_timesteps = 200
+        # Upstream hard-codes 200 (the paper uses T = 1000). Config denoiser.timesteps; 200 keeps
+        # the previous behaviour bit-identical (tests/test_diffusion_timesteps.py).
+        self.num_timesteps = int(getattr(args, "diffusion_timesteps", 200))
+        if self.num_timesteps < 2:
+            raise ValueError("diffusion_timesteps must be >= 2")
         self.manifold = PoincareBall()
         self.alphas, betas = get_alphas(self.num_timesteps)
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
@@ -278,13 +285,14 @@ class StabilityDiffusion(diffusion):
             generator=generator,
         )
 
+    def check_t_star(self, t_star: int) -> None:
+        """t* must lie in [0, T) and not past the minimum of a_t (stability/diffusion_schedule.py)."""
+        check_t_star(int(t_star), self.num_timesteps, self.prior, self.c)
+
     def _denoise_from_tstar(
         self, x_start, edge_index, direction, labels, t_star, generator
     ):
-        if not 0 <= t_star < self.num_timesteps:
-            raise ValueError(
-                f"t_star must be in [0, {self.num_timesteps - 1}]"
-            )
+        self.check_t_star(t_star)
         noise = self.draw_noise(x_start, generator)
         x_t = self.q_sample(
             x_start=x_start,

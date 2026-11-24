@@ -93,6 +93,7 @@ def build_model_args(graph: GraphData, config: ExperimentConfig, device: torch.d
         denoiser_layers=config.denoiser.layers,
         clip_x0=config.denoiser.clip_x0,
         radial_delta=config.denoiser.radial_delta,
+        diffusion_timesteps=config.denoiser.timesteps,
         angular_noise=config.denoiser.angular_noise,
         denoiser_parameterization=config.denoiser.parameterization,
         prior_variance=config.denoiser.prior_variance,

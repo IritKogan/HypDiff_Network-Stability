@@ -91,11 +91,13 @@ def test_signal_coefficient_is_not_monotone_and_stochastic_range_is_checked(grap
     assert flat.last_valid_stochastic_t() == 199
 
 
-def test_training_fails_fast_when_the_stochastic_sampler_cannot_run(graph):
-    config = tiny_config(recovery={"sampler": "stochastic", "eta": 1.0, "t_star": 180, "steps": 200})
-    split = split_edges(graph.edges, graph.node_count, 0.5, 0.1, 0.4, 40, seed=3)
-    with pytest.raises(ValueError, match="stochastic sampler invalid"):
-        train_models(graph, split, config, torch.device("cpu"))
+def test_config_rejects_t_star_where_the_reverse_process_is_ill_posed():
+    # 2026-11-24: t* past the minimum of a_t (154 for T=200, delta=1) is now rejected when the
+    # config is built (stability/diffusion_schedule.py), before any training. Previously the
+    # stochastic sampler's own check stopped train_models at t*=180. The minimum of a_t (154) is also
+    # the last valid stochastic step here, so that check (tested directly above) is now a second guard.
+    with pytest.raises(ValueError, match="past the minimum"):
+        tiny_config(recovery={"sampler": "stochastic", "eta": 1.0, "t_star": 180, "steps": 200})
 
 
 def test_schedule_is_strided_and_ends_at_zero(graph):

@@ -49,6 +49,8 @@ negatives_per_positive = 1       # resampled every epoch
 epochs = 5000
 learning_rate = 0.001
 noise_formula = "exact"          # "exact" | "upstream"  (Decision 5)
+timesteps = 200                  # diffusion length T (upstream code 200, paper 1000; added 2026-11-24, E1).
+                                 # recovery.t_star must not pass the minimum of a_t (stability/diffusion_schedule.py)
 architecture = "residual_gcn"    # "upstream_gcn" (HypDiff gcndec) | "residual_gcn" (x0 = x_t + correction)
 hidden_dim = 128                 # residual_gcn only
 layers = 3                       # residual_gcn only
