@@ -1,0 +1,19 @@
+# E2 replication (2026-11-24): is the small p_e signal of unrolled_t35 (strat-AUC 0.563, permutation
+# p = 0.005) reproducible? Same variant, two other denoiser seeds (init, edge drops, training noise).
+# Run: python scripts/hypstab_e2.py --plan configs/hypstab/e2_replicate.toml --autoencoder-from <stage2 run>
+
+[criteria]
+target_fpr = 0.05
+quality_tolerance = 0.0
+informative_auc = 0.55
+min_ll_gain = 0.001
+
+[[variant]]
+name = "unrolled_t35_seed2"
+description = "unrolled_t35 with denoiser seed 20261122"
+overrides = { "denoiser.training" = "unrolled", "recovery.sampler" = "iterative", "denoiser.seed" = 20261122 }
+
+[[variant]]
+name = "unrolled_t35_seed3"
+description = "unrolled_t35 with denoiser seed 20261123"
+overrides = { "denoiser.training" = "unrolled", "recovery.sampler" = "iterative", "denoiser.seed" = 20261123 }
