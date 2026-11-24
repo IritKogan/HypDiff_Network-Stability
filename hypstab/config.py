@@ -128,6 +128,31 @@ class DecoderSection:
 
 
 @dataclass(frozen=True)
+class CommunitySection:
+    n_clusters: int
+    max_iter: int
+    frechet_steps: int
+    frechet_tol: float
+    seed: int
+
+    def validate(self) -> None:
+        for name in ("n_clusters", "max_iter", "frechet_steps"):
+            if getattr(self, name) < 1:
+                raise ConfigError(f"community.{name} must be >= 1, got {getattr(self, name)}")
+        if not self.frechet_tol > 0 or self.seed < 0:
+            raise ConfigError("community.frechet_tol must be > 0 and community.seed >= 0")
+
+
+@dataclass(frozen=True)
+class ClampSection:
+    clip: float
+
+    def validate(self) -> None:
+        if not (math.isfinite(self.clip) and self.clip > 0):
+            raise ConfigError(f"clamp.clip must be > 0, got {self.clip}")
+
+
+@dataclass(frozen=True)
 class HypstabConfig:
     run: RunSection
     geometry: GeometrySection
@@ -135,6 +160,8 @@ class HypstabConfig:
     split: SplitSection
     encoder: EncoderSection
     decoder: DecoderSection
+    community: CommunitySection
+    clamp: ClampSection
 
     def validate(self) -> None:
         for f in fields(self):

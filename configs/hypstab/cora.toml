@@ -46,3 +46,15 @@ negatives_per_positive = 1               # resampled every epoch
 [decoder]
 fermi_dirac_r = 2.0                      # P(edge) = 1 / (exp((d^2 - r) / t) + 1), d = Poincare distance
 fermi_dirac_t = 1.0
+
+[community]
+# Hyperbolic K-means on the TRAIN-graph embeddings (k = 7 chosen on validation, Decision 7).
+n_clusters = 7
+max_iter = 40                            # Lloyd iterations (stops earlier when assignments are stable)
+frechet_steps = 100                      # Karcher-mean iterations per centre update (stops at frechet_tol)
+frechet_tol = 1e-9
+seed = 20261118
+
+[clamp]
+# clamp_only baseline: standardised tangent coordinates at the community centre clipped to [-clip, clip]
+clip = 1.0
