@@ -1,0 +1,14 @@
+# hypstab (from-scratch code, Decision 12) - Cora configuration.
+# Every key is required (no hidden defaults); unknown keys are rejected.
+# The resolved file is saved with every run (hypstab/runinfo.py).
+# Sections are added stage by stage (claude/plan-from-scratch-2026-11-24.md).
+
+[run]
+name = "cora"
+output_root = "artifacts/hypstab_runs"   # e.g. a Google Drive folder on Colab
+device = "auto"                          # "auto" | "cpu" | "cuda"
+seed = 20261124                          # global seed (torch, numpy, random)
+
+[geometry]
+manifold = "poincare"                    # only "poincare" for now (Lorentz: later option)
+curvature = 1.0                          # c > 0; ball radius 1/sqrt(c) (same convention as the old code)
