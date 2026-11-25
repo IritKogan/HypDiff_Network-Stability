@@ -20,17 +20,15 @@ root = "data"
 download = true
 
 [synthetic]
-# Used only when data.dataset = "SBM" or "BA" (hypstab/data/synthetic.py; configs/hypstab/sbm.toml, ba.toml).
+# Used only when data.dataset = "SBM" or "BA" (hypstab/data/synthetic.py: torch_geometric generators).
+# Values = the node-level synthetic datasets of the HypDiff paper, section 4.1 (the paper gives no seed).
 seed = 20261125
-sbm_blocks = 7                           # like Cora's 7 classes
-sbm_block_size = 300                     # 2100 nodes
-sbm_p_in = 0.05                          # ~15,700 edges inside blocks
-sbm_p_out = 0.002                        # ~3,800 edges between blocks (~81% inside, as Cora's same-class share)
-# Density: with identity features the sparse version (p_in 0.012, p_out 0.0004, mean degree ~4.3 like Cora)
-# was not learnable (validation AUC 0.59: too few train edges per node to infer the block); mean degree
-# ~18.6 gives 0.84 with the Cora settings (2026-11-25).
-ba_nodes = 2100
-ba_m = 8                                 # ~16,700 edges, mean degree ~16 (m = 2: validation AUC 0.52)
+sbm_blocks = 5                           # paper: five equally partitioned communities
+sbm_block_size = 200                     # paper: 1000 nodes
+sbm_p_in = 0.21                          # paper: intra-community p = 0.21
+sbm_p_out = 0.025                        # paper: inter-community q = 0.025
+ba_nodes = 1000                          # paper: 1000 nodes
+ba_m = 5                                 # paper: "between 1 and 10" edges per new node; fixed 5 here
 
 [split]
 # Same values as configs/cora.toml -> the same split as the old code (tested).
