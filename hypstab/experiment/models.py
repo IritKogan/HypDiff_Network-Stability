@@ -25,6 +25,7 @@ from hypstab.data.graph import GraphData
 from hypstab.data.split import EdgeSplit
 from hypstab.diffusion.model import HyperbolicDiffusion
 from hypstab.evaluation.validation import validation_report
+from hypstab.metrics import adjusted_rand_index
 from hypstab.models.kmeans import KMeansResult
 from hypstab.training.autoencoder import HyperbolicAutoencoder, build_autoencoder, train_autoencoder
 from hypstab.training.communities import CommunityContext, fit_communities
@@ -92,6 +93,9 @@ def train_bundle(graph: GraphData, split: EdgeSplit, config: HypstabConfig, memb
         "denoiser_seconds": round(denoiser_seconds, 1),
         "denoiser_skipped_epochs": len(denoiser_history["skipped_epochs"]),
         "communities": context.summary(),
+        # agreement of the model's communities (K-means, no labels) with the class labels / SBM blocks
+        "communities_vs_classes_ari": None if graph.class_labels is None else
+        adjusted_rand_index(context.labels.cpu().numpy(), graph.class_labels),
         "validation_auc": {k: v["auc"] for k, v in validation.items() if isinstance(v, dict)},
         "histories": {"autoencoder": result.history, "denoiser": denoiser_history},
     }

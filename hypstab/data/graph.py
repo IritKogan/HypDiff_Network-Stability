@@ -62,7 +62,14 @@ def load_planetoid(name: str, root: str | Path, download: bool) -> GraphData:
     )
 
 
-def load_graph(dataset: str, root: str | Path, download: bool) -> GraphData:
+def load_graph(dataset: str, root: str | Path, download: bool, synthetic=None) -> GraphData:
+    """Planetoid graphs from disk; "SBM" / "BA" generated from the config section [synthetic]."""
     if dataset in {"Cora", "CiteSeer", "PubMed"}:
         return load_planetoid(dataset, root, download)
+    if dataset in {"SBM", "BA"}:
+        if synthetic is None:
+            raise ValueError(f"{dataset} needs the [synthetic] config section")
+        from hypstab.data.synthetic import synthetic_graph
+
+        return synthetic_graph(dataset, synthetic)
     raise ValueError(f"unsupported dataset: {dataset}")

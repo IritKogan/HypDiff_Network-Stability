@@ -7,7 +7,7 @@ load graph -> split (train / val / pool + val negatives + control pairs) -> dama
 
 Run directory:
   config.toml, run_info.json                 (hypstab/runinfo.py; saved before anything runs)
-  split.npz, series.npz                      split and damage orderings
+  graph.npz, split.npz, series.npz           graph edges (+ class labels), split, damage orderings
   models/member_XX/                          autoencoder.pt, communities.pt, denoiser.pt, record.json, done
   models.json                                member records (seeds, validation AUCs, times; no histories)
   results/<source>__<attack>.npz             raw arrays of recovery.run_attack (written when an attack ends)
@@ -56,8 +56,12 @@ def run_experiment(config: HypstabConfig, run_dir: Path, device: torch.device, g
                    log_every: int = 0) -> dict[str, Any]:
     run_dir = Path(run_dir)
     if graph is None:
-        graph = load_graph(config.data.dataset, config.data.root, config.data.download)
+        graph = load_graph(config.data.dataset, config.data.root, config.data.download, config.synthetic)
     split = make_split(graph, config)
+    graph_arrays = {"edges": graph.edges}
+    if graph.class_labels is not None:
+        graph_arrays["class_labels"] = np.asarray(graph.class_labels)
+    _check_or_save_npz(run_dir / "graph.npz", graph_arrays)     # e.g. the generated SBM / BA graph
     _check_or_save_npz(run_dir / "split.npz", {
         "train": split.train, "val": split.val, "pool": split.pool,
         "val_negatives": split.val_negatives, "control_pairs": split.control_pairs})
@@ -115,7 +119,8 @@ def summarize(graph, split, results, config, records) -> dict[str, Any]:
                         for k in ("train", "val", "pool", "val_negatives", "control_pairs")},
         "K": config.recovery.reconstructions,
         "way_b_references": config.experiment.way_b_references,
-        "members": [{"member": r["member"], "validation_auc": r["validation_auc"]} for r in records],
+        "members": [{"member": r["member"], "validation_auc": r["validation_auc"],
+                     "communities_vs_classes_ari": r.get("communities_vs_classes_ari")} for r in records],
         "sources": {},
     }
     for source, attacks in results.items():

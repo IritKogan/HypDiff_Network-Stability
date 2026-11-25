@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> dict:
     print(f"run dir: {run_dir} | device: {device}", flush=True)
 
     data = config.data
-    graph = load_graph(data.dataset, data.root, data.download)
+    graph = load_graph(data.dataset, data.root, data.download, config.synthetic)
     s = config.split
     split = split_edges(
         graph.edges, graph.node_count, s.train_fraction, s.val_fraction, s.pool_fraction, s.control_pairs, s.seed

@@ -24,7 +24,7 @@ from typing import Any
 
 DEVICES = ("auto", "cpu", "cuda")
 MANIFOLDS = ("poincare", "euclidean")      # euclidean: hyperbolic-vs-Euclidean check only
-DATASETS = ("Cora", "CiteSeer", "PubMed")
+DATASETS = ("Cora", "CiteSeer", "PubMed", "SBM", "BA")      # SBM / BA: hypstab/data/synthetic.py
 ACTIVATIONS = ("relu", "leaky_relu", "elu", "tanh", "identity")  # hypstab/models/hgcn.py
 ANGULAR_NOISE = ("upstream", "folded")                            # hypstab/diffusion/model.py
 SAMPLERS = ("one_step", "iterative")                              # hypstab/diffusion/model.py
@@ -71,6 +71,27 @@ class DataSection:
 
     def validate(self) -> None:
         _choice("data.dataset", self.dataset, DATASETS)
+
+
+@dataclass(frozen=True)
+class SyntheticSection:
+    seed: int
+    sbm_blocks: int
+    sbm_block_size: int
+    sbm_p_in: float
+    sbm_p_out: float
+    ba_nodes: int
+    ba_m: int
+
+    def validate(self) -> None:
+        for name in ("sbm_blocks", "sbm_block_size", "ba_m"):
+            if getattr(self, name) < 1:
+                raise ConfigError(f"synthetic.{name} must be >= 1, got {getattr(self, name)}")
+        for name in ("sbm_p_in", "sbm_p_out"):
+            if not 0 <= getattr(self, name) <= 1:
+                raise ConfigError(f"synthetic.{name} must be in [0, 1], got {getattr(self, name)}")
+        if self.ba_nodes <= self.ba_m or self.seed < 0:
+            raise ConfigError("synthetic.ba_nodes must be > synthetic.ba_m and synthetic.seed >= 0")
 
 
 @dataclass(frozen=True)
@@ -252,6 +273,7 @@ class HypstabConfig:
     run: RunSection
     geometry: GeometrySection
     data: DataSection
+    synthetic: SyntheticSection
     split: SplitSection
     encoder: EncoderSection
     decoder: DecoderSection
