@@ -29,6 +29,8 @@ ACTIVATIONS = ("relu", "leaky_relu", "elu", "tanh", "identity")  # hypstab/model
 ANGULAR_NOISE = ("upstream", "folded")                            # hypstab/diffusion/model.py
 SAMPLERS = ("one_step", "iterative")                              # hypstab/diffusion/model.py
 DENOISER_TRAINING = ("edge_reconstruction", "unrolled")            # hypstab/training/denoiser.py
+ATTACKS = ("random", "targeted_weighted", "targeted_deterministic")  # hypstab/experiment/damage.py
+SOURCES = ("noise", "ensemble")                                    # hypstab/experiment/recovery.py
 
 
 class ConfigError(ValueError):
@@ -210,6 +212,42 @@ class RecoverySection:
 
 
 @dataclass(frozen=True)
+class PerturbationSection:
+    seed: int
+    damage_fractions: tuple[float, ...]
+    series: int
+    attacks: tuple[str, ...]
+
+    def validate(self) -> None:
+        if not self.damage_fractions:
+            raise ConfigError("perturbation.damage_fractions must not be empty")
+        if any(not 0 < f < 1 for f in self.damage_fractions):
+            raise ConfigError(f"perturbation.damage_fractions must be in (0, 1), got {self.damage_fractions}")
+        if any(a >= b for a, b in zip(self.damage_fractions, self.damage_fractions[1:])):
+            raise ConfigError("perturbation.damage_fractions must be strictly increasing (nested levels)")
+        if not self.attacks or len(set(self.attacks)) != len(self.attacks):
+            raise ConfigError("perturbation.attacks must be a non-empty list without repeats")
+        for attack in self.attacks:
+            _choice("perturbation.attacks", attack, ATTACKS)
+        if self.series < 1 or self.seed < 0:
+            raise ConfigError("perturbation.series must be >= 1 and perturbation.seed >= 0")
+
+
+@dataclass(frozen=True)
+class ExperimentSection:
+    sources: tuple[str, ...]
+    way_b_references: int
+
+    def validate(self) -> None:
+        if not self.sources or len(set(self.sources)) != len(self.sources):
+            raise ConfigError("experiment.sources must be a non-empty list without repeats")
+        for source in self.sources:
+            _choice("experiment.sources", source, SOURCES)
+        if self.way_b_references < 1:
+            raise ConfigError(f"experiment.way_b_references must be >= 1, got {self.way_b_references}")
+
+
+@dataclass(frozen=True)
 class HypstabConfig:
     run: RunSection
     geometry: GeometrySection
@@ -222,6 +260,8 @@ class HypstabConfig:
     diffusion: DiffusionSection
     denoiser: DenoiserSection
     recovery: RecoverySection
+    perturbation: PerturbationSection
+    experiment: ExperimentSection
 
     def validate(self) -> None:
         for f in fields(self):
@@ -244,6 +284,12 @@ class HypstabConfig:
             raise ConfigError(
                 f"recovery.t_star = {self.recovery.t_star} must be < denoiser.train_t_max = "
                 f"{self.denoiser.train_t_max} (the denoiser is trained on steps 0 .. train_t_max - 1)"
+            )
+        pool = self.split.pool_fraction
+        if self.perturbation.damage_fractions[-1] >= pool:
+            raise ConfigError(
+                f"the largest damage fraction ({self.perturbation.damage_fractions[-1]}) must be below "
+                f"split.pool_fraction ({pool}): only pool edges are ever removed (Decision 6)"
             )
 
 
