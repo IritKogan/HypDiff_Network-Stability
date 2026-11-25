@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from torch import Tensor
 
-from hypstab.geometry import poincare as pb
+from hypstab.geometry import get_geometry
 
 
 def standardize(v: Tensor) -> tuple[Tensor, Tensor, Tensor]:
@@ -28,9 +28,11 @@ def standardize(v: Tensor) -> tuple[Tensor, Tensor, Tensor]:
     return (v - mean) / std, mean, std
 
 
-def clamp_to_centers(embeddings: Tensor, labels: Tensor, centers: Tensor, c: float, clip: float) -> Tensor:
+def clamp_to_centers(embeddings: Tensor, labels: Tensor, centers: Tensor, c: float, clip: float,
+                     manifold: str = "poincare") -> Tensor:
     if clip <= 0:
         raise ValueError("clip must be > 0")
+    pb = get_geometry(manifold)
     node_centers = centers.to(embeddings)[labels.to(embeddings.device)]
     tangent = pb.logmap(node_centers, embeddings, c)
     z, mean, std = standardize(tangent)

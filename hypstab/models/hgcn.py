@@ -14,6 +14,9 @@ fixed (config geometry.curvature), the same in every layer.
 Not taken over from the upstream code: attention / local aggregation (off in all
 our runs, not in the book), trainable curvature, and the unused MLP / GCN heads
 of upstream LPModel.
+
+manifold = "euclidean" (hyperbolic-vs-Euclidean check only): all maps become identities, so the
+same code is a plain GCN with the same layers, dropout and activations.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
 
-from hypstab.geometry import poincare as pb
+from hypstab.geometry import get_geometry
 
 ACTIVATIONS = ("relu", "leaky_relu", "elu", "tanh", "identity")
 
@@ -62,9 +65,11 @@ def normalized_adjacency(node_count: int, edges: np.ndarray, device: torch.devic
 class HypLinear(nn.Module):
     """Mobius linear map W (x)_c x, plus optional hyperbolic bias expmap0(b)."""
 
-    def __init__(self, in_features: int, out_features: int, c: float, dropout: float, bias: bool):
+    def __init__(self, in_features: int, out_features: int, c: float, dropout: float, bias: bool,
+                 manifold: str = "poincare"):
         super().__init__()
         self.c = c
+        self.geo = get_geometry(manifold)
         self.dropout = dropout
         self.use_bias = bias
         self.weight = nn.Parameter(torch.empty(out_features, in_features))
@@ -73,26 +78,30 @@ class HypLinear(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         weight = F.dropout(self.weight, self.dropout, training=self.training)
-        out = pb.mobius_matvec(weight, x, self.c)
+        geo = self.geo
+        out = geo.mobius_matvec(weight, x, self.c)
         if self.bias is not None:
-            out = pb.mobius_add(out, pb.expmap0(self.bias.view(1, -1), self.c), self.c)
+            out = geo.mobius_add(out, geo.expmap0(self.bias.view(1, -1), self.c), self.c)
         return out
 
 
 class HGCNLayer(nn.Module):
     """One hyperbolic graph convolution: HypLinear -> HypAgg -> HypAct."""
 
-    def __init__(self, in_features: int, out_features: int, c: float, dropout: float, bias: bool, act: str):
+    def __init__(self, in_features: int, out_features: int, c: float, dropout: float, bias: bool, act: str,
+                 manifold: str = "poincare"):
         super().__init__()
         self.c = c
-        self.linear = HypLinear(in_features, out_features, c, dropout, bias)
+        self.geo = get_geometry(manifold)
+        self.linear = HypLinear(in_features, out_features, c, dropout, bias, manifold)
         self.act_name = act
         self.act = activation_fn(act)
 
     def forward(self, x: Tensor, adjacency: Tensor) -> Tensor:
+        geo = self.geo
         h = self.linear(x)
-        h = pb.expmap0(torch.sparse.mm(adjacency, pb.logmap0(h, self.c)), self.c)  # HypAgg
-        return pb.expmap0(self.act(pb.logmap0(h, self.c)), self.c)  # HypAct
+        h = geo.expmap0(torch.sparse.mm(adjacency, geo.logmap0(h, self.c)), self.c)  # HypAgg
+        return geo.expmap0(self.act(geo.logmap0(h, self.c)), self.c)  # HypAct
 
 
 class HGCNEncoder(nn.Module):
@@ -108,19 +117,21 @@ class HGCNEncoder(nn.Module):
         bias: bool,
         activation: str,
         final_activation: str,
+        manifold: str = "poincare",
     ):
         super().__init__()
         if num_layers < 1:
             raise ValueError("num_layers must be >= 1")
         self.c = c
+        self.geo = get_geometry(manifold)
         dims = [feature_dim] + [dim] * num_layers
         acts = [activation] * (num_layers - 1) + [final_activation]
         self.layers = nn.ModuleList(
-            HGCNLayer(dims[i], dims[i + 1], c, dropout, bias, acts[i]) for i in range(num_layers)
+            HGCNLayer(dims[i], dims[i + 1], c, dropout, bias, acts[i], manifold) for i in range(num_layers)
         )
 
     def forward(self, features: Tensor, adjacency: Tensor) -> Tensor:
-        x = pb.expmap0(features, self.c)
+        x = self.geo.expmap0(features, self.c)
         for layer in self.layers:
             x = layer(x, adjacency)
         return x

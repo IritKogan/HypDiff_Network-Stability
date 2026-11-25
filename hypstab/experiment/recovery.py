@@ -173,7 +173,7 @@ def run_attack(
                 if key not in cache:
                     embeddings = bundle.autoencoder.encode(features, adjacency)
                     clamped = clamp_to_centers(embeddings, bundle.context.labels, bundle.context.centers,
-                                               c, config.clamp.clip)
+                                               c, config.clamp.clip, config.geometry.manifold)
                     cache[key] = {
                         "embeddings": embeddings,
                         "no_diffusion": (_logits(bundle, embeddings, removed_pairs),

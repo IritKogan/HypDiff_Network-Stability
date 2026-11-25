@@ -36,7 +36,7 @@ from torch import Tensor, nn
 
 from hypstab.diffusion.denoiser import ResidualGCNDenoiser
 from hypstab.diffusion.schedule import DiffusionSchedule
-from hypstab.geometry import poincare as pb
+from hypstab.geometry import get_geometry
 from hypstab.models.clamp import standardize
 
 ANGULAR_NOISE = ("upstream", "folded")
@@ -63,6 +63,7 @@ class HyperbolicDiffusion(nn.Module):
         curvature: float,
         angular_noise: str,
         clip_x0: bool,
+        manifold: str = "poincare",
     ):
         super().__init__()
         if angular_noise not in ANGULAR_NOISE:
@@ -70,6 +71,7 @@ class HyperbolicDiffusion(nn.Module):
         self.net = ResidualGCNDenoiser(dim, hidden_dim, layers)
         self.schedule = schedule
         self.c = curvature
+        self.geo = get_geometry(manifold)
         self.angular_noise = angular_noise
         self.clip_x0 = clip_x0
 
@@ -78,19 +80,19 @@ class HyperbolicDiffusion(nn.Module):
     def tangent_coordinates(self, embeddings: Tensor, labels: Tensor, centers: Tensor):
         """Standardised tangent coordinates at the community centres + what is needed to map back."""
         node_centers = centers.to(embeddings)[labels]
-        tangent = pb.logmap(node_centers, embeddings, self.c)
+        tangent = self.geo.logmap(node_centers, embeddings, self.c)
         x0, mean, std = standardize(tangent)
         if not torch.isfinite(x0).all():
             raise ValueError("non-finite standardised tangent coordinates")
         return x0, mean, std, node_centers
 
     def to_ball(self, x0: Tensor, mean: Tensor, std: Tensor, node_centers: Tensor) -> Tensor:
-        return pb.expmap(node_centers, x0 * std + mean, self.c)
+        return self.geo.expmap(node_centers, x0 * std + mean, self.c)
 
     def angular_noise_sample(self, like: Tensor, labels: Tensor, centers: Tensor,
                              generator: torch.Generator | None) -> Tensor:
         e = torch.randn(like.shape, dtype=like.dtype, device=like.device, generator=generator)
-        signs = torch.sign(pb.logmap0(centers.to(like), self.c))[labels]
+        signs = torch.sign(self.geo.logmap0(centers.to(like), self.c))[labels]
         return (e.abs() if self.angular_noise == "folded" else e) * signs
 
     def q_sample(self, x0: Tensor, t: Tensor, noise: Tensor) -> Tensor:

@@ -49,6 +49,7 @@ def fit_communities(
         max_iter=com.max_iter,
         frechet_steps=com.frechet_steps,
         frechet_tol=com.frechet_tol,
+        manifold=config.geometry.manifold,
     )
     return CommunityContext(labels=result.labels.to(features.device),
                             centers=result.centers.to(features.device), kmeans=result)

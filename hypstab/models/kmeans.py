@@ -28,6 +28,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
+from hypstab.geometry import get_geometry
 from hypstab.geometry import poincare as pb
 
 
@@ -40,35 +41,36 @@ class KMeansResult:
     converged: bool          # assignments stable before max_iter
 
 
-def pairwise_distance(points: Tensor, centers: Tensor, c: float) -> Tensor:
+def pairwise_distance(points: Tensor, centers: Tensor, c: float, geo=pb) -> Tensor:
     """Geodesic distances (n, k) between points (n, d) and centres (k, d)."""
-    return pb.distance(points[:, None, :], centers[None, :, :], c)
+    return geo.distance(points[:, None, :], centers[None, :, :], c)
 
 
-def frechet_mean(points: Tensor, c: float, init: Tensor, max_steps: int = 100, tol: float = 1e-9) -> Tensor:
+def frechet_mean(points: Tensor, c: float, init: Tensor, max_steps: int = 100, tol: float = 1e-9,
+                 geo=pb) -> Tensor:
     """Karcher mean of points (m, d) on the Poincare ball, started at ``init`` (d,)."""
     mu = init
     for _ in range(max_steps):
-        step = pb.logmap(mu.expand_as(points), points, c).mean(dim=0)
-        mu_next = pb.expmap(mu, step, c)
-        moved = float(pb.distance(mu, mu_next, c))
+        step = geo.logmap(mu.expand_as(points), points, c).mean(dim=0)
+        mu_next = geo.expmap(mu, step, c)
+        moved = float(geo.distance(mu, mu_next, c))
         mu = mu_next
         if moved < tol:
             break
     return mu
 
 
-def kmeanspp_init(points: Tensor, k: int, c: float, rng: np.random.Generator) -> Tensor:
+def kmeanspp_init(points: Tensor, k: int, c: float, rng: np.random.Generator, geo=pb) -> Tensor:
     n = points.shape[0]
     if k > n:
         raise ValueError(f"more clusters ({k}) than points ({n})")
     chosen = [int(rng.integers(n))]
-    closest = pb.distance(points, points[chosen[0]], c).pow(2).cpu().numpy()
+    closest = geo.distance(points, points[chosen[0]], c).pow(2).cpu().numpy()
     for _ in range(1, k):
         total = closest.sum()
         index = int(rng.integers(n)) if total <= 0 else int(rng.choice(n, p=closest / total))
         chosen.append(index)
-        closest = np.minimum(closest, pb.distance(points, points[index], c).pow(2).cpu().numpy())
+        closest = np.minimum(closest, geo.distance(points, points[index], c).pow(2).cpu().numpy())
     return points[chosen].clone()
 
 
@@ -80,29 +82,31 @@ def hyperbolic_kmeans(
     max_iter: int,
     frechet_steps: int = 100,
     frechet_tol: float = 1e-9,
+    manifold: str = "poincare",
 ) -> KMeansResult:
-    """Cluster points (n, d) inside the Poincare ball. Computed in float64."""
+    """Cluster points (n, d) inside the Poincare ball (or in flat space, manifold "euclidean"). float64."""
+    geo = get_geometry(manifold)
     x = points.detach().to(torch.float64)
     if not torch.isfinite(x).all():
         raise ValueError("hyperbolic_kmeans got non-finite points")
-    if (x.norm(dim=-1) * c**0.5 >= 1).any():
+    if manifold == "poincare" and (x.norm(dim=-1) * c**0.5 >= 1).any():
         raise ValueError("hyperbolic_kmeans: points must lie inside the ball")
     rng = np.random.default_rng(seed)
-    centers = kmeanspp_init(x, k, c, rng)
-    labels = pairwise_distance(x, centers, c).argmin(dim=1)
+    centers = kmeanspp_init(x, k, c, rng, geo)
+    labels = pairwise_distance(x, centers, c, geo).argmin(dim=1)
     converged = False
     iterations = 0
     for iterations in range(1, max_iter + 1):
-        labels = _reseed_empty(x, centers, labels, k, c)
+        labels = _reseed_empty(x, centers, labels, k, c, geo)
         centers = torch.stack(
-            [frechet_mean(x[labels == j], c, centers[j], frechet_steps, frechet_tol) for j in range(k)]
+            [frechet_mean(x[labels == j], c, centers[j], frechet_steps, frechet_tol, geo) for j in range(k)]
         )
-        new_labels = pairwise_distance(x, centers, c).argmin(dim=1)
+        new_labels = pairwise_distance(x, centers, c, geo).argmin(dim=1)
         if torch.equal(new_labels, labels):
             converged = True
             break
         labels = new_labels
-    distances = pairwise_distance(x, centers, c)
+    distances = pairwise_distance(x, centers, c, geo)
     inertia = float(distances.gather(1, labels[:, None]).pow(2).sum())
     return KMeansResult(
         centers=centers.to(points.dtype),
@@ -113,12 +117,12 @@ def hyperbolic_kmeans(
     )
 
 
-def _reseed_empty(x: Tensor, centers: Tensor, labels: Tensor, k: int, c: float) -> Tensor:
+def _reseed_empty(x: Tensor, centers: Tensor, labels: Tensor, k: int, c: float, geo=pb) -> Tensor:
     labels = labels.clone()
     for j in range(k):
         if (labels == j).any():
             continue
-        own = pb.distance(x, centers[labels], c)
+        own = geo.distance(x, centers[labels], c)
         sizes = torch.bincount(labels, minlength=k)[labels]
         own[sizes <= 1] = -1.0  # never empty another cluster
         farthest = int(own.argmax())

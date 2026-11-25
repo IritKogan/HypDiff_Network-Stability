@@ -43,6 +43,7 @@ def build_diffusion(config: HypstabConfig) -> HyperbolicDiffusion:
     return HyperbolicDiffusion(
         dim=config.encoder.dim, hidden_dim=den.hidden_dim, layers=den.layers, schedule=schedule,
         curvature=config.geometry.curvature, angular_noise=d.angular_noise, clip_x0=d.clip_x0,
+        manifold=config.geometry.manifold,
     )
 
 

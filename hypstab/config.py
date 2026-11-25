@@ -23,7 +23,7 @@ import typing
 from typing import Any
 
 DEVICES = ("auto", "cpu", "cuda")
-MANIFOLDS = ("poincare",)
+MANIFOLDS = ("poincare", "euclidean")      # euclidean: hyperbolic-vs-Euclidean check only
 DATASETS = ("Cora", "CiteSeer", "PubMed")
 ACTIVATIONS = ("relu", "leaky_relu", "elu", "tanh", "identity")  # hypstab/models/hgcn.py
 ANGULAR_NOISE = ("upstream", "folded")                            # hypstab/diffusion/model.py

@@ -55,8 +55,10 @@ def build_autoencoder(feature_dim: int, config: HypstabConfig) -> HyperbolicAuto
         bias=enc.bias,
         activation=enc.activation,
         final_activation=enc.final_activation,
+        manifold=config.geometry.manifold,
     )
-    decoder = FermiDiracDecoder(config.decoder.fermi_dirac_r, config.decoder.fermi_dirac_t, c)
+    decoder = FermiDiracDecoder(config.decoder.fermi_dirac_r, config.decoder.fermi_dirac_t, c,
+                                config.geometry.manifold)
     return HyperbolicAutoencoder(encoder, decoder)
 
 

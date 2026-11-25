@@ -51,7 +51,7 @@ def validation_report(
     neg = torch.as_tensor(np.asarray(split.val_negatives), device=device)
     embeddings = model.encode(features, train_adjacency)
     clamped = clamp_to_centers(embeddings, context.labels, context.centers,
-                               config.geometry.curvature, config.clamp.clip)
+                               config.geometry.curvature, config.clamp.clip, config.geometry.manifold)
     methods = {"no_diffusion": embeddings, "clamp_only": clamped}
     report: dict[str, Any] = {"protocol": "train graph as input; validation edges vs validation negatives"}
     for name, points in methods.items():

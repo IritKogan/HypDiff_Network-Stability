@@ -13,21 +13,22 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
-from hypstab.geometry import poincare as pb
+from hypstab.geometry import get_geometry
 
 
 class FermiDiracDecoder(nn.Module):
-    def __init__(self, r: float, t: float, c: float):
+    def __init__(self, r: float, t: float, c: float, manifold: str = "poincare"):
         super().__init__()
         if t <= 0:
             raise ValueError("Fermi-Dirac temperature t must be > 0")
         self.r = r
         self.t = t
         self.c = c
+        self.geo = get_geometry(manifold)
 
     def logits(self, embeddings: Tensor, pairs: Tensor) -> Tensor:
         """Edge logits for index pairs (m, 2) of node embeddings (n, dim)."""
-        sqdist = pb.sqdistance(embeddings[pairs[:, 0]], embeddings[pairs[:, 1]], self.c)
+        sqdist = self.geo.sqdistance(embeddings[pairs[:, 0]], embeddings[pairs[:, 1]], self.c)
         return -(sqdist - self.r) / self.t
 
     def probabilities(self, embeddings: Tensor, pairs: Tensor) -> Tensor:
