@@ -56,7 +56,8 @@ def run_experiment(config: HypstabConfig, run_dir: Path, device: torch.device, g
                    log_every: int = 0) -> dict[str, Any]:
     run_dir = Path(run_dir)
     if graph is None:
-        graph = load_graph(config.data.dataset, config.data.root, config.data.download, config.synthetic)
+        graph = load_graph(config.data.dataset, config.data.root, config.data.download, config.synthetic,
+                           config.data.features)
     split = make_split(graph, config)
     graph_arrays = {"edges": graph.edges}
     if graph.class_labels is not None:

@@ -62,14 +62,34 @@ def load_planetoid(name: str, root: str | Path, download: bool) -> GraphData:
     )
 
 
-def load_graph(dataset: str, root: str | Path, download: bool, synthetic=None) -> GraphData:
-    """Planetoid graphs from disk; "SBM" / "BA" generated from the config section [synthetic]."""
+def with_identity_features(graph: GraphData) -> GraphData:
+    """The same graph with one one-hot vector per node: the model sees the structure only.
+
+    Advisor (2026-11-26): run Cora without its bag-of-words features. Edges and class labels are unchanged;
+    the features carry no information about any edge, so no leakage is possible through them.
+    """
+    n = graph.node_count
+    return GraphData(name=graph.name, features=torch.eye(n, dtype=torch.float32), edges=graph.edges,
+                     class_labels=graph.class_labels)
+
+
+def load_graph(dataset: str, root: str | Path, download: bool, synthetic=None,
+               features: str = "original") -> GraphData:
+    """Planetoid graphs from disk; "SBM" / "BA" generated from the config section [synthetic].
+
+    features: "original" (the dataset's own features; SBM / BA have identity features anyway) or
+    "identity" (one-hot per node, config data.features).
+    """
+    if features not in {"original", "identity"}:
+        raise ValueError(f"unsupported feature mode: {features}")
     if dataset in {"Cora", "CiteSeer", "PubMed"}:
-        return load_planetoid(dataset, root, download)
-    if dataset in {"SBM", "BA"}:
+        graph = load_planetoid(dataset, root, download)
+    elif dataset in {"SBM", "BA"}:
         if synthetic is None:
             raise ValueError(f"{dataset} needs the [synthetic] config section")
         from hypstab.data.synthetic import synthetic_graph
 
-        return synthetic_graph(dataset, synthetic)
-    raise ValueError(f"unsupported dataset: {dataset}")
+        graph = synthetic_graph(dataset, synthetic)
+    else:
+        raise ValueError(f"unsupported dataset: {dataset}")
+    return with_identity_features(graph) if features == "identity" else graph

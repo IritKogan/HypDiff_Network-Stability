@@ -1,0 +1,131 @@
+# Cora WITHOUT its bag-of-words features (advisor, 2026-11-26): every node gets a one-hot vector, so the model
+# sees the graph structure only. Identical to configs/hypstab/cora.toml except run.name and data.features
+# (same split, damage series, model and experiment settings; no retuning). Tested.
+# hypstab (from-scratch code, Decision 12) - Cora configuration.
+# Every key is required (no hidden defaults); unknown keys are rejected.
+# The resolved file is saved with every run (hypstab/runinfo.py).
+# Sections are added stage by stage (claude/plan-from-scratch-2026-11-24.md).
+
+[run]
+name = "cora_structure"
+output_root = "artifacts/hypstab_runs"   # e.g. a Google Drive folder on Colab
+device = "auto"                          # "auto" | "cpu" | "cuda"
+seed = 20261124                          # global seed (torch, numpy, random)
+
+[geometry]
+manifold = "poincare"                    # only "poincare" for now (Lorentz: later option)
+curvature = 1.0                          # c > 0; ball radius 1/sqrt(c) (same convention as the old code)
+
+[data]
+dataset = "Cora"                         # Planetoid Cora, row-normalised features
+root = "data"
+download = true
+features = "identity"                   # "original" | "identity" (one-hot per node: structure only)
+
+[synthetic]
+# Used only when data.dataset = "SBM" or "BA" (hypstab/data/synthetic.py: torch_geometric generators).
+# Values = the node-level synthetic datasets of the HypDiff paper, section 4.1 (the paper gives no seed).
+seed = 20261125
+sbm_blocks = 5                           # paper: five equally partitioned communities
+sbm_block_size = 200                     # paper: 1000 nodes
+sbm_p_in = 0.21                          # paper: intra-community p = 0.21
+sbm_p_out = 0.025                        # paper: inter-community q = 0.025
+ba_nodes = 1000                          # paper: 1000 nodes
+ba_m = 5                                 # paper: "between 1 and 10" edges per new node; fixed 5 here
+
+[split]
+# Same values as configs/cora.toml -> the same split as the old code (tested).
+# Pool edges are the only edges ever removed; they are never seen in training.
+seed = 20261116
+train_fraction = 0.5
+val_fraction = 0.1
+pool_fraction = 0.4
+control_pairs = 20000                    # non-edge reference pairs; never training negatives
+
+[encoder]
+# HGCN, 2 layers as in the HypDiff paper. dim / dropout / weight_decay / learning_rate from our
+# Cora tuning on validation (Decision 7; paper values: dim 256, lr 0.001, L2 1e-5).
+seed = 20261117
+dim = 128
+num_layers = 2
+activation = "relu"                      # hidden layers
+final_activation = "relu"                # last layer (upstream HypDiff: relu)
+dropout = 0.7                            # on the weight matrices (as in HGCN)
+bias = false
+max_epochs = 2000
+patience = 200                           # early stopping on validation AUC
+learning_rate = 0.01
+weight_decay = 0.0005
+negatives_per_positive = 1               # resampled every epoch
+
+[decoder]
+fermi_dirac_r = 2.0                      # P(edge) = 1 / (exp((d^2 - r) / t) + 1), d = Poincare distance
+fermi_dirac_t = 1.0
+
+[community]
+# Hyperbolic K-means on the TRAIN-graph embeddings (k = 7 chosen on validation, Decision 7).
+n_clusters = 7
+max_iter = 40                            # Lloyd iterations (stops earlier when assignments are stable)
+frechet_steps = 100                      # Karcher-mean iterations per centre update (stops at frechet_tol)
+frechet_tol = 1e-9
+seed = 20261118
+
+[clamp]
+# clamp_only baseline: standardised tangent coordinates at the community centre clipped to [-clip, clip]
+clip = 1.0
+
+[diffusion]
+# Paper values (Fu et al. 2024; experiment E1 2026-11-24: same validation quality as the old
+# T = 200 / delta = 1 / "upstream" noise, closer to the book). Old code: 200 / 1.0 / "upstream".
+timesteps = 1000                         # T
+radial_delta = 0.4                       # delta of the radial term a_t = sqrt(abar_t) + delta * tanh(t / 500)
+angular_noise = "folded"                 # "folded": sgn(dir) * |eps| (paper App. C.1) | "upstream": sgn(dir) * eps
+clip_x0 = true                           # clip the predicted standardised x0 to [-1, 1] (HypDiff code)
+
+[denoiser]
+# Residual GCN trained for edge reconstruction (Decision 8): per epoch drop U(0, train_max_drop) of the
+# TRAIN edges, encode (frozen encoder), noise to t < train_t_max, one denoising step, BCE through the
+# frozen decoder on dropped + kept train edges vs sampled non-edges (never val negatives / control pairs).
+seed = 20261121
+training = "edge_reconstruction"         # one denoising step at t < train_t_max (Decision 8)
+                                         # | "unrolled": through the iterative chain from t* (experiment E2)
+hidden_dim = 128
+layers = 3
+epochs = 5000
+learning_rate = 0.001
+train_max_drop = 0.4
+train_t_max = 40                         # = round(t_star * 8 / 7), as in E1 (old: t_star 7, train_t_max 8)
+nonfinite_max_skips = 50                 # epochs with non-finite loss / gradients skipped (Decision 4)
+
+[recovery]
+seed = 20261120
+t_star = 35                              # same noise level as the old t* = 7 at T = 200 (s_t ~ 0.13); E1: all t* equal
+reconstructions = 10                     # K per damaged graph
+sampler = "one_step"                     # x0 predicted directly from x_t* (Decision 8)
+                                         # | "iterative": reverse chain t* -> 0 in `steps` network calls (book)
+steps = 8                                # iterative only: strided steps, e.g. t* 35 -> 35, 30, ..., 5, 0
+
+[perturbation]
+# Cumulative damage (Decision 6): each series is one ordering of the POOL edges; level L removes the first
+# round(L * |E|) edges of the ordering, so levels are nested inside a series. Same seed / values as the old
+# configs/cora.toml -> the same series (tested).
+seed = 20261119
+damage_fractions = [0.10, 0.20, 0.30]   # fraction of ALL edges; must stay below split.pool_fraction
+series = 20                             # N independent cumulative series per attack
+attacks = ["random", "targeted_weighted", "targeted_deterministic"]
+# random                 : uniform ordering of the pool
+# targeted_weighted      : ordering sampled without replacement, P ~ k_i * k_j (degrees in the full graph)
+# targeted_deterministic : k_i * k_j descending (one reference series)
+
+[experiment]
+# Where the K = recovery.reconstructions reconstructions of every damaged graph come from (Decision 11),
+# run paired (same split, series, noise seeds, reference draws):
+#   "noise"    : one model (member 0 = the config seeds), K diffusion noise draws;
+#   "ensemble" : K models trained on the train edges with different seeds; reconstruction k = model k.
+sources = ["noise", "ensemble"]
+# p_e is computed in two ways (Decision 11, both always saved):
+#   way A ("vote")    : each reconstruction decides alone (pairwise, Decision 10); p_e = r_e / (n_e * K);
+#   way B ("average") : per damaged graph the K reconstructions' shares (rank among control pairs) are
+#                       averaged into one score; it is compared with way_b_references random control pairs;
+#                       p_e = hits / (n_e * way_b_references).
+way_b_references = 10

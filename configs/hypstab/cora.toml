@@ -17,6 +17,7 @@ curvature = 1.0                          # c > 0; ball radius 1/sqrt(c) (same co
 dataset = "Cora"                         # Planetoid Cora, row-normalised features
 root = "data"
 download = true
+features = "original"                   # "original" | "identity" (one-hot per node: structure only)
 
 [synthetic]
 # Used only when data.dataset = "SBM" or "BA" (hypstab/data/synthetic.py: torch_geometric generators).

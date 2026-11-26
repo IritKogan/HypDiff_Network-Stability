@@ -112,7 +112,8 @@ def main(argv: list[str] | None = None) -> dict:
         (run_dir / "plan.toml").write_text(Path(args.plan).read_text(encoding="utf-8"), encoding="utf-8")
     print(f"run dir: {run_dir} | device: {device} | smoke: {args.smoke}", flush=True)
 
-    graph = load_graph(base.data.dataset, base.data.root, base.data.download, base.synthetic)
+    graph = load_graph(base.data.dataset, base.data.root, base.data.download, base.synthetic,
+                       base.data.features)
     s = base.split
     split = split_edges(graph.edges, graph.node_count, s.train_fraction, s.val_fraction, s.pool_fraction,
                         s.control_pairs, s.seed)
