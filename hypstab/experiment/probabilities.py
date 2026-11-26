@@ -187,18 +187,26 @@ def write_rows(path: Path, rows: list[dict]) -> None:
 
 
 # --------------------------------------------------------------------------- figures
-# Approved by the students 2026-11-26 (one file per figure and attack):
-#   probabilities_<attack>   wide histogram per damage level + the levels together on one graph
-#   examples_<attack>        six example edges (2 hard, 2 medium, 2 easy): every probability each received
-#   easy_vs_varies_<attack>  one dot per edge: typical probability (median) vs how much it varies (5-95%)
-#   lift_<attack>            option 1: histogram of diffusion - no_diffusion per level
-#   lift_scatter_<attack>    option 1: one dot per (series, edge): without vs with diffusion
-#   trajectories_<attack>    option 3: first vs last damage level (one dot per (series, edge)) + change histogram
-# "Hard / medium / easy" in the examples is relative: edges at fixed ranks of the per-edge median.
+# Titles and axis labels approved by the students (2026-11-26). One file per figure and attack:
+#   probabilities_<attack>   one histogram per damage level + all damage levels together
+#   examples_<attack>        six example edges (2 hard, 2 medium, 2 easy), middle damage level
+#   easy_vs_varies_<attack>  one dot per edge: typical probability vs how much it varies, middle level
+#   lift_<attack>            option 1: with diffusion minus without, one histogram per level
+#   lift_scatter_<attack>    option 1: without vs with diffusion, middle level
+#   trajectories_<attack>    option 3: same edge at the first vs the last level + histogram of the change
+# Only edges removed already at the first level are used in trajectories_ (first vs last level).
+# "Hard / medium / easy" is relative: edges at fixed ranks of the per-edge median (no threshold).
+# Dots in the scatter plots use reconstruction 0 (one dot per edge and series).
 
 EXAMPLE_RANKS = (("hard", (0.05, 0.15)), ("medium", (0.45, 0.55)), ("easy", (0.85, 0.95)))
 EXAMPLE_COLORS = {"hard": "#c0392b", "medium": "#e0a039", "easy": "#2e8b57"}
 LEVEL_COLORS = ("#2a7ab9", "#e07b39", "#3a9a5b", "#8e44ad", "#7f8c8d")
+PROB = "Probability the edge was recovered"
+
+
+def dataset_label(dataset: str, features: str) -> str:
+    """Name used in figure titles, e.g. "Cora" or "Cora-structure" (identity features)."""
+    return f"{dataset}-structure" if features == "identity" and dataset not in {"SBM", "BA"} else dataset
 
 
 def per_edge_values(arrays: dict[str, np.ndarray], level: int) -> dict[int, np.ndarray]:
@@ -225,101 +233,126 @@ def example_edges(edges: np.ndarray, medians: np.ndarray) -> list[tuple[str, int
     return picks
 
 
-def _line_y(ax, ceiling):
-    ax.axvline(ceiling, color="gray", linestyle="--", linewidth=1)
+def first_level_changes(arrays: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """Edges removed already at the first level: probability at the first and the last level.
 
-
-def _diagonal(ax, top):
-    ax.plot([0, top], [0, top], color="black", linewidth=1)
-    ax.set_xlim(0, top)
-    ax.set_ylim(0, top)
-    ax.set_aspect("equal")
-    ax.grid(alpha=0.3)
+    Returns first (M, K), last (M, K), change = last - first (M, K), weight (M, K; each edge sums to 1),
+    edge (M,), series (M,).
+    """
+    t = trajectories(arrays)
+    keep = t["first"] == 0
+    edge = t["edge"][keep]
+    paths = t["paths"][keep]
+    K = paths.shape[1]
+    counts = np.bincount(edge, minlength=int(edge.max()) + 1 if len(edge) else 0)
+    weight = np.repeat((1.0 / (counts[edge] * K))[:, None], K, axis=1) if len(edge) else np.zeros((0, K))
+    return {"first": paths[:, :, 0], "last": paths[:, :, -1], "change": paths[:, :, -1] - paths[:, :, 0],
+            "weight": weight, "edge": edge, "series": t["series"][keep]}
 
 
 def plot_attack(directory: Path, attack: str, arrays: dict[str, np.ndarray], fractions, ceiling: float,
-                seed: int = 0) -> list[Path]:
-    """The approved figures for one attack (see the list above). Returns the written paths."""
+                dataset: str = "") -> list[Path]:
+    """The approved figures for one attack, from the arrays of a run. Returns the written paths."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    del seed  # figures are deterministic (fixed ranks, reconstruction 0)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     L = len(fractions)
     middle = L // 2
+    mid = f"{fractions[middle]:.0%}"
     top = min(1.0, ceiling + 0.02)
+    name = f"{dataset}, {attack}" if dataset else attack
+    max_label = f"max possible ({ceiling:.3f})"
     prob_bins = np.linspace(0.0, 1.0, HIST_BINS + 1)
     centres = (prob_bins[:-1] + prob_bins[1:]) / 2
 
-    def save(fig, name):
+    def ceiling_line(ax, vertical=True, label=True):
+        kwargs = dict(color="gray", linestyle="--", linewidth=1, label=max_label if label else None)
+        (ax.axvline if vertical else ax.axhline)(ceiling, **kwargs)
+
+    def diagonal(ax):
+        ax.plot([0, top], [0, top], color="black", linewidth=1)
+        ceiling_line(ax, vertical=True, label=True)
+        ceiling_line(ax, vertical=False, label=False)
+        ax.set_xlim(0, top)
+        ax.set_ylim(0, top)
+        ax.set_aspect("equal")
+        ax.text(0.04, 0.93, "above the line: went up", transform=ax.transAxes, va="top")
+        ax.text(0.96, 0.04, "below the line: went down", transform=ax.transAxes, ha="right")
+        ax.legend(loc="center left", fontsize=8)
+        ax.grid(alpha=0.3)
+
+    def save(fig, stem):
         fig.tight_layout()
-        path = directory / f"{name}_{attack}.png"
+        path = directory / f"{stem}_{attack}.png"
         fig.savefig(path, dpi=130)
         plt.close(fig)
         written.append(path)
 
-    # 1 + 2. probabilities: one histogram per level, then all levels on one graph
-    fig, axes = plt.subplots(1, L + 1, figsize=(4.2 * (L + 1), 3.8))
+    # 1. probabilities: one histogram per level, then all damage levels together
+    fig, axes = plt.subplots(1, L + 1, figsize=(4.4 * (L + 1), 4.0))
     for level, fraction in enumerate(fractions):
         values, weights = level_probabilities(arrays, level)
         share = weighted_histogram(values, weights, prob_bins) * 100
         ax = axes[level]
         ax.bar(prob_bins[:-1], share, width=np.diff(prob_bins), align="edge", color="#2a7ab9",
                edgecolor="white", linewidth=0.3)
-        _line_y(ax, ceiling)
-        ax.set_title(f"{attack}: {fraction:.0%} of edges removed")
-        ax.set_xlabel("probability")
+        ceiling_line(ax)
+        ax.set_title(f"{name}: {fraction:.0%} of edges removed", fontsize=10)
+        ax.set_xlabel(PROB)
+        ax.set_ylabel("% of edges")
         ax.set_xlim(0, 1)
+        ax.legend(loc="upper left", fontsize=8)
         ax.grid(alpha=0.3)
         axes[-1].plot(centres, share, marker="o", markersize=3, color=LEVEL_COLORS[level % len(LEVEL_COLORS)],
                       label=f"{fraction:.0%} removed")
-    axes[0].set_ylabel("% of edges")
-    _line_y(axes[-1], ceiling)
-    axes[-1].set_title(f"all levels (max possible {ceiling:.3f})")
-    axes[-1].set_xlabel("probability")
+    ceiling_line(axes[-1])
+    axes[-1].set_title("All damage levels together", fontsize=10)
+    axes[-1].set_xlabel(PROB)
+    axes[-1].set_ylabel("% of edges")
     axes[-1].set_xlim(0, 1)
-    axes[-1].legend(loc="upper left")
+    axes[-1].legend(loc="upper left", fontsize=8)
     axes[-1].grid(alpha=0.3)
     save(fig, "probabilities")
 
-    # 3 + 4. per edge, middle level
+    # 2 + 3. per edge, middle level
     values = per_edge_values(arrays, middle)
     if values:
         edges, medians, spreads = per_edge_summary(values)
         picks = example_edges(edges, medians)
-        fig, axes = plt.subplots(2, 3, figsize=(11, 5.5), sharex=True)
+        fig, axes = plt.subplots(2, 3, figsize=(12, 6), sharex=True)
         for i, (label, p) in enumerate(picks):
             ax = axes[i % 2, i // 2]
             ax.hist(values[p], bins=prob_bins, color=EXAMPLE_COLORS[label])
-            _line_y(ax, ceiling)
-            ax.set_title(f"{label} edge #{p} ({len(values[p])} probabilities)", fontsize=9)
+            ceiling_line(ax, label=False)
+            ax.set_title(f"{label.capitalize()} edge #{p} ({len(values[p])} probabilities)", fontsize=9)
+            ax.set_xlabel(PROB, fontsize=8)
+            ax.set_ylabel("Count")
             ax.grid(alpha=0.3)
-        for ax in axes[1]:
-            ax.set_xlabel("probability")
-        for ax in axes[:, 0]:
-            ax.set_ylabel("count")
-        fig.suptitle(f"{attack}, {fractions[middle]:.0%} removed: six example edges")
+        fig.suptitle(f"{name}, {mid} removed: six example edges (dashed: {max_label})")
         save(fig, "examples")
 
-        fig, ax = plt.subplots(figsize=(7, 5))
+        fig, ax = plt.subplots(figsize=(7.5, 5.5))
         ax.scatter(medians, spreads, s=6, alpha=0.4, color="#2a7ab9")
         for label, p in picks:
             j = int(np.searchsorted(edges, p))
             ax.scatter([medians[j]], [spreads[j]], s=60, color=EXAMPLE_COLORS[label], edgecolor="black", zorder=5)
-        ax.set_xlabel("typical probability of the edge")
-        ax.set_ylabel("how much its probability varies")
+        ceiling_line(ax)
+        ax.set_xlabel(f"Typical {PROB.lower()}")
+        ax.set_ylabel("How much it varies")
         ax.set_xlim(0, top)
-        ax.set_title(f"{attack}, {fractions[middle]:.0%} removed: one dot per edge")
+        ax.set_title(f"{name}, {mid} removed: one dot per edge")
+        ax.legend(loc="upper right", fontsize=8)
         ax.grid(alpha=0.3)
         save(fig, "easy_vs_varies")
 
-    # 5. option 1, histogram of the lift per level
+    # 4. option 1, histogram per level
     lift_bins = np.linspace(-1.0, 1.0, 81)
-    fig, axes = plt.subplots(1, L, figsize=(4.2 * L, 3.8), sharey=True)
+    fig, axes = plt.subplots(1, L, figsize=(4.4 * L, 4.0), sharey=True)
     axes = np.atleast_1d(axes)
     for level, fraction in enumerate(fractions):
         lift, weights = level_lift(arrays, level)
@@ -327,45 +360,64 @@ def plot_attack(directory: Path, attack: str, arrays: dict[str, np.ndarray], fra
         ax.bar(lift_bins[:-1], weighted_histogram(lift, weights, lift_bins) * 100, width=np.diff(lift_bins),
                align="edge", color="#e07b39", edgecolor="white", linewidth=0.3)
         ax.axvline(0, color="black", linewidth=0.8)
-        ax.set_title(f"{attack}: {fraction:.0%} removed")
-        ax.set_xlabel("with diffusion - without")
+        ax.set_title(f"{fraction:.0%} of edges removed", fontsize=10)
+        ax.set_xlabel("With diffusion minus without")
         ax.grid(alpha=0.3)
     axes[0].set_ylabel("% of edges")
+    fig.suptitle(f"{name}: how much the diffusion changed the probability")
     save(fig, "lift")
 
-    # 6. option 1, without vs with diffusion (reconstruction 0), middle level
+    # 5. option 1, without vs with diffusion (reconstruction 0), middle level
     removed = arrays["removed"][middle]
     if removed.any():
-        without = arrays["prob_no_diffusion"][middle][removed]
-        with_diffusion = arrays["prob_diffusion"][middle][:, 0, :][removed]
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.scatter(without, with_diffusion, s=4, alpha=0.25, color="#e07b39")
-        _diagonal(ax, top)
-        ax.set_xlabel("probability without diffusion")
-        ax.set_ylabel("probability with diffusion")
-        ax.set_title(f"{attack}, {fractions[middle]:.0%} removed: one dot per edge and series")
+        fig, ax = plt.subplots(figsize=(6.5, 6.5))
+        ax.scatter(arrays["prob_no_diffusion"][middle][removed], arrays["prob_diffusion"][middle][:, 0, :][removed],
+                   s=4, alpha=0.25, color="#e07b39")
+        diagonal(ax)
+        ax.set_xlabel(f"{PROB}, without diffusion")
+        ax.set_ylabel(f"{PROB}, with diffusion")
+        ax.set_title(f"{name}, {mid} removed: with vs without diffusion", fontsize=10)
         save(fig, "lift_scatter")
 
-    # 7. option 3, first vs last level (reconstruction 0) + histogram of the change (all reconstructions)
+    # 6. option 3: edges removed already at the first level, first vs last level
     if L >= 2:
-        t = trajectories(arrays)
-        full = t["first"] == 0
-        if full.any():
-            fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
+        c = first_level_changes(arrays)
+        if len(c["edge"]):
+            first, last = f"{fractions[0]:.0%}", f"{fractions[-1]:.0%}"
+            fig, axes = plt.subplots(1, 2, figsize=(13, 6))
             ax = axes[0]
-            ax.scatter(t["paths"][full, 0, 0], t["paths"][full, 0, -1], s=4, alpha=0.25, color="#6a51a3")
-            _diagonal(ax, top)
-            ax.set_xlabel(f"probability when {fractions[0]:.0%} of edges are removed")
-            ax.set_ylabel(f"probability when {fractions[-1]:.0%} of edges are removed")
-            ax.set_title(f"{attack}: one dot per edge and series")
+            ax.scatter(c["first"][:, 0], c["last"][:, 0], s=4, alpha=0.25, color="#6a51a3")
+            diagonal(ax)
+            ax.set_xlabel(f"{PROB}, {first} removed")
+            ax.set_ylabel(f"{PROB}, {last} removed")
+            ax.set_title(f"{name}: same edge, more damage", fontsize=10)
             change_bins = np.linspace(-1.0, 1.0, 81)
-            share = weighted_histogram(t["change"], t["weight"], change_bins) * 100
+            share = weighted_histogram(c["change"], c["weight"], change_bins) * 100
             axes[1].bar(change_bins[:-1], share, width=np.diff(change_bins), align="edge", color="#6a51a3",
                         edgecolor="white", linewidth=0.3)
             axes[1].axvline(0, color="black", linewidth=0.8)
-            axes[1].set_xlabel(f"probability at {fractions[-1]:.0%} - at first removal")
+            axes[1].set_xlabel(f"Change in the {PROB.lower()} ({last} minus {first})")
             axes[1].set_ylabel("% of edges")
-            axes[1].set_title("change as the damage grows")
+            axes[1].set_title("Change as the damage grows", fontsize=10)
             axes[1].grid(alpha=0.3)
             save(fig, "trajectories")
+    return written
+
+
+def plot_run(run_dir: Path, config, results: dict[str, dict[str, np.ndarray]] | None = None) -> list[Path]:
+    """All figures of a finished "probabilities" run, from its results/noise__<attack>.npz files."""
+    run_dir = Path(run_dir)
+    if results is None:
+        results = {}
+        for attack in config.perturbation.attacks:
+            path = run_dir / "results" / f"noise__{attack}.npz"
+            if not path.is_file():
+                raise FileNotFoundError(f"missing results file: {path}")
+            results[attack] = dict(np.load(path))
+    ceiling = probability_ceiling(config.decoder.fermi_dirac_r, config.decoder.fermi_dirac_t)
+    label = dataset_label(config.data.dataset, config.data.features)
+    written = []
+    for attack, arrays in results.items():
+        written += plot_attack(run_dir / "figures", attack, arrays, config.perturbation.damage_fractions,
+                               ceiling, dataset=label)
     return written

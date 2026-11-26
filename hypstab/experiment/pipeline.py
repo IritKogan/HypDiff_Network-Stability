@@ -158,8 +158,7 @@ def _run_probabilities(config, run_dir, device, graph, split, series, log_every)
     for attack, arrays in results.items():
         rows.extend(prob_analysis.edge_rows(arrays, fractions, attack, split.pool, degrees, same))
     prob_analysis.write_rows(run_dir / "edges.csv", rows)
-    for attack, arrays in results.items():
-        prob_analysis.plot_attack(run_dir / "figures", attack, arrays, fractions, ceiling, seed=config.run.seed)
+    prob_analysis.plot_run(run_dir, config, results)
     return summary
 
 

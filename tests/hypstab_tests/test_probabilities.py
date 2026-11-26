@@ -157,6 +157,30 @@ def test_example_edges_and_per_edge_summary():
     assert pa.per_edge_values(_toy_arrays(), 1)[1].tolist() == pytest.approx([0.2, 0.1])
 
 
+def test_first_level_changes_by_hand():
+    c = pa.first_level_changes(_toy_arrays())
+    assert sorted(c["series"].tolist()) == [0, 1] and set(c["edge"].tolist()) == {0}
+    row = int(np.flatnonzero(c["series"] == 0)[0])
+    np.testing.assert_allclose(c["first"][row], [0.8, 0.7], atol=1e-6)
+    np.testing.assert_allclose(c["last"][row], [0.4, 0.3], atol=1e-6)
+    np.testing.assert_allclose(c["change"][row], [-0.4, -0.4], atol=1e-6)
+    assert c["weight"].sum() == pytest.approx(1.0)
+
+
+def test_first_level_changes_skip_edges_first_removed_later():
+    arrays = _toy_arrays()
+    arrays["removed"] = np.concatenate([arrays["removed"], arrays["removed"][-1:]])
+    arrays["prob_diffusion"] = np.concatenate([arrays["prob_diffusion"], arrays["prob_diffusion"][-1:]])
+    c = pa.first_level_changes(arrays)
+    assert set(c["edge"].tolist()) == {0}        # edge 1 is first removed at level 1 -> not used
+
+
+def test_dataset_label():
+    assert pa.dataset_label("Cora", "original") == "Cora"
+    assert pa.dataset_label("Cora", "identity") == "Cora-structure"
+    assert pa.dataset_label("SBM", "identity") == "SBM"
+
+
 def test_weighted_quantiles():
     values = np.array([1.0, 2.0, 3.0])
     assert pa.weighted_quantiles(values, np.array([1.0, 1.0, 2.0]), [0.0, 0.5, 1.0]) == [1.0, 2.0, 3.0]
@@ -266,6 +290,27 @@ def test_no_removed_edge_in_any_damaged_graph_probabilities(prob_run):
     for edges in seen:
         assert np.isin(pair_keys(split["train"], n), pair_keys(edges, n)).all()
         assert np.isin(pair_keys(split["val"], n), pair_keys(edges, n)).all()
+
+
+def test_figures_script_redraws_from_a_finished_run(prob_run, tmp_path):
+    """scripts/hypstab_figures.py: figures from the saved results only (no model)."""
+    import shutil
+    import subprocess
+    import sys
+
+    from hypstab.config import config_to_toml
+
+    config, _, run_dir, _, _ = prob_run
+    copy_dir = tmp_path / "copy"
+    copy_dir.mkdir()
+    shutil.copytree(run_dir / "results", copy_dir / "results")
+    (copy_dir / "config.toml").write_text(config_to_toml(config), encoding="utf-8")
+    done = subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "hypstab_figures.py"), "--run-dir",
+                           str(copy_dir)], capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr
+    original = sorted(p.name for p in (run_dir / "figures").iterdir())
+    assert sorted(p.name for p in (copy_dir / "figures").iterdir()) == original
+    assert len(original) == 6 * len(config.perturbation.attacks)
 
 
 def test_resume_loads_results(prob_run, capsys):
