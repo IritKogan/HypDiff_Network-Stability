@@ -49,6 +49,7 @@ def experiment_config(raw: dict, **sections):
     raw["recovery"].update(reconstructions=3)
     raw["perturbation"].update(damage_fractions=[0.05, 0.1, 0.2], series=2)
     raw["experiment"].update(way_b_references=4, output="pairwise", sources=["noise", "ensemble"])
+    raw["perturbation"]["attacks"] = ["random", "targeted_weighted", "targeted_deterministic"]
     for section, values in sections.items():
         raw[section].update(values)
     return config_from_dict(raw)
@@ -80,8 +81,11 @@ def test_cora_experiment_values_match_old_config(raw):
     with (REPO_ROOT / "configs" / "cora.toml").open("rb") as handle:
         old = tomllib.load(handle)["perturbation"]
     new = raw["perturbation"]
-    for key in ("seed", "damage_fractions", "series", "attacks"):
+    for key in ("seed", "damage_fractions", "series"):
         assert new[key] == old[key]
+    # students 2026-11-26: targeted_deterministic dropped; each attack has its own random stream, so the
+    # remaining attacks keep exactly the old series
+    assert new["attacks"] == [a for a in old["attacks"] if a != "targeted_deterministic"]
 
 
 # --------------------------------------------------------------------------- damage series

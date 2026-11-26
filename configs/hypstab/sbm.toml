@@ -110,7 +110,7 @@ steps = 8                                # iterative only: strided steps, e.g. t
 seed = 20261119
 damage_fractions = [0.10, 0.20, 0.30]   # fraction of ALL edges; must stay below split.pool_fraction
 series = 20                             # N independent cumulative series per attack
-attacks = ["random", "targeted_weighted", "targeted_deterministic"]
+attacks = ["random", "targeted_weighted"]   # students 2026-11-26: targeted_deterministic not needed
 # random                 : uniform ordering of the pool
 # targeted_weighted      : ordering sampled without replacement, P ~ k_i * k_j (degrees in the full graph)
 # targeted_deterministic : k_i * k_j descending (one reference series)

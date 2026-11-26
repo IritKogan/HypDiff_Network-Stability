@@ -175,6 +175,20 @@ def test_first_level_changes_skip_edges_first_removed_later():
     assert set(c["edge"].tolist()) == {0}        # edge 1 is first removed at level 1 -> not used
 
 
+def test_dropping_an_attack_keeps_the_other_series():
+    """targeted_deterministic removed from the configs (2026-11-26): the remaining series are unchanged."""
+    from hypstab.experiment.damage import make_damage_series
+
+    graph = sbm_graph()
+    pool = graph.edges[::2]
+    args = (pool, graph.edges, graph.node_count, [0.05, 0.1, 0.2])
+    three = make_damage_series(*args, ("random", "targeted_weighted", "targeted_deterministic"), 3, 7)
+    two = make_damage_series(*args, ("random", "targeted_weighted"), 3, 7)
+    for attack in two:
+        for a, b in zip(three[attack], two[attack]):
+            np.testing.assert_array_equal(a.order, b.order)
+
+
 def test_dataset_label():
     assert pa.dataset_label("Cora", "original") == "Cora"
     assert pa.dataset_label("Cora", "identity") == "Cora-structure"
@@ -238,9 +252,8 @@ def test_probability_run_outputs(prob_run):
     assert sum(level["probabilities"]["histogram_share"]) == pytest.approx(1.0)
     assert "change_first_to_last_level" in loaded["attacks"]["random"]
     figures = {p.name for p in (run_dir / "figures").iterdir()}
-    for attack in config.perturbation.attacks:
-        for name in ("probabilities", "examples", "easy_vs_varies", "lift", "lift_scatter", "trajectories"):
-            assert f"{name}_{attack}.png" in figures, f"{name}_{attack}.png"
+    assert figures == {f"{name}.png" for name in
+                       ("probabilities", "examples", "easy_vs_varies", "lift", "lift_scatter", "trajectories")}
     header = (run_dir / "edges.csv").read_text().splitlines()[0]
     assert "prob_q50" in header and "lift_median" in header and "same_class" in header
 
@@ -310,7 +323,7 @@ def test_figures_script_redraws_from_a_finished_run(prob_run, tmp_path):
     assert done.returncode == 0, done.stderr
     original = sorted(p.name for p in (run_dir / "figures").iterdir())
     assert sorted(p.name for p in (copy_dir / "figures").iterdir()) == original
-    assert len(original) == 6 * len(config.perturbation.attacks)
+    assert len(original) == 6
 
 
 def test_resume_loads_results(prob_run, capsys):
