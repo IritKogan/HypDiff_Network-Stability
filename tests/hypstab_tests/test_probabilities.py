@@ -143,6 +143,20 @@ def test_trajectories_need_nested_levels():
         pa.trajectories(arrays)
 
 
+def test_example_edges_and_per_edge_summary():
+    values = {p: np.full(5, p / 20.0) for p in range(20)}
+    values[3] = np.array([0.0, 0.1, 0.5, 0.9, 1.0])
+    edges, medians, spreads = pa.per_edge_summary(values)
+    assert edges.tolist() == list(range(20))
+    assert medians[3] == pytest.approx(0.5) and spreads[3] == pytest.approx(0.98 - 0.02)
+    assert spreads[0] == 0.0
+    picks = pa.example_edges(edges, medians)
+    assert [label for label, _ in picks] == ["hard", "hard", "medium", "medium", "easy", "easy"]
+    order = edges[np.argsort(medians, kind="stable")]
+    assert [p for _, p in picks] == [int(order[int(r * 20)]) for r in (0.05, 0.15, 0.45, 0.55, 0.85, 0.95)]
+    assert pa.per_edge_values(_toy_arrays(), 1)[1].tolist() == pytest.approx([0.2, 0.1])
+
+
 def test_weighted_quantiles():
     values = np.array([1.0, 2.0, 3.0])
     assert pa.weighted_quantiles(values, np.array([1.0, 1.0, 2.0]), [0.0, 0.5, 1.0]) == [1.0, 2.0, 3.0]
@@ -201,8 +215,8 @@ def test_probability_run_outputs(prob_run):
     assert "change_first_to_last_level" in loaded["attacks"]["random"]
     figures = {p.name for p in (run_dir / "figures").iterdir()}
     for attack in config.perturbation.attacks:
-        assert f"probabilities_{attack}.png" in figures and f"lift_{attack}.png" in figures
-    assert "trajectories_random.png" in figures and "per_edge_random.png" in figures
+        for name in ("probabilities", "examples", "easy_vs_varies", "lift", "lift_scatter", "trajectories"):
+            assert f"{name}_{attack}.png" in figures, f"{name}_{attack}.png"
     header = (run_dir / "edges.csv").read_text().splitlines()[0]
     assert "prob_q50" in header and "lift_median" in header and "same_class" in header
 
