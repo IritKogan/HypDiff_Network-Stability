@@ -72,14 +72,30 @@ def main(argv: list[str] | None = None) -> dict:
     started = time.perf_counter()
     summary = run_experiment(config, run_dir, device, log_every=args.log_every)
     print(f"done in {time.perf_counter() - started:.0f} s", flush=True)
-    for row in summary["headline"]:
-        print(f"{row['source']:8s} {row['attack']:22s} {row['damage_fraction']:.2f} {row['method']:12s} "
-              f"p_e A {row['mean_p_e_way_a']:.3f} | B {row['mean_p_e_way_b']:.3f} | "
-              f"AUC {row['auc_mean_probability']:.3f}", flush=True)
+    for line in summary_lines(summary):
+        print(line, flush=True)
     if args.zip:
         archive = write_zip(Path(run_dir))
         print(f"zip: {archive} ({archive.stat().st_size / 1e6:.1f} MB)", flush=True)
     return summary
+
+
+def summary_lines(summary: dict) -> list[str]:
+    """Short console summary of a finished run, for both experiment.output modes."""
+    if summary.get("output") == "probabilities":
+        lines = [f"model val AUC: {summary['model']['validation_auc']}",
+                 f"K = {summary['K']}, probability ceiling {summary['probability_ceiling']:.3f}",
+                 "probability the edge was recovered (diffusion; equal weight per edge): 5% / 25% / 50% / 75% / 95%"]
+        for attack, item in summary["attacks"].items():
+            for level in item["levels"]:
+                q = level["probabilities"]["quantiles"]
+                lines.append(f"{attack:22s} {level['damage_fraction']:.2f}  " + " / ".join(
+                    f"{q[key]:.3f}" for key in ("q05", "q25", "q50", "q75", "q95")))
+        lines.append("figures: <run dir>/figures/*.png")
+        return lines
+    return [f"{row['source']:8s} {row['attack']:22s} {row['damage_fraction']:.2f} {row['method']:12s} "
+            f"p_e A {row['mean_p_e_way_a']:.3f} | B {row['mean_p_e_way_b']:.3f} | "
+            f"AUC {row['auc_mean_probability']:.3f}" for row in summary["headline"]]
 
 
 def write_zip(run_dir: Path) -> Path:

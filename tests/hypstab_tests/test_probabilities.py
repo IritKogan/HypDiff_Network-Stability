@@ -326,6 +326,28 @@ def test_figures_script_redraws_from_a_finished_run(prob_run, tmp_path):
     assert len(original) == 6
 
 
+def test_run_script_summary_and_zip_for_probabilities(prob_run, tmp_path):
+    """scripts/hypstab_run.py: the console summary and the zip work for the probabilities output (bug
+    2026-11-26: the summary printout expected the pairwise 'headline' table -> KeyError after a full GPU run)."""
+    import importlib.util
+    import shutil
+    import zipfile
+
+    spec = importlib.util.spec_from_file_location("hypstab_run", REPO_ROOT / "scripts" / "hypstab_run.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _, _, run_dir, summary, _ = prob_run
+    lines = module.summary_lines(summary)
+    assert any("random" in line for line in lines) and "ceiling" in lines[1]
+    copy_dir = tmp_path / "run"
+    shutil.copytree(run_dir, copy_dir)
+    archive = module.write_zip(copy_dir)
+    names = zipfile.ZipFile(archive).namelist()
+    assert "run/summary.json" in names and "run/figures/probabilities.png" in names
+    assert "run/results/noise__random.npz" in names
+    assert not any(n.startswith("run/models/") and not n.endswith("record.json") for n in names)
+
+
 def test_resume_loads_results(prob_run, capsys):
     config, graph, run_dir, summary, _ = prob_run
     again = run_experiment(config, run_dir, torch.device("cpu"), graph=graph)
