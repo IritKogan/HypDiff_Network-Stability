@@ -98,7 +98,7 @@ nonfinite_max_skips = 50                 # epochs with non-finite loss / gradien
 [recovery]
 seed = 20261120
 t_star = 35                              # same noise level as the old t* = 7 at T = 200 (s_t ~ 0.13); E1: all t* equal
-reconstructions = 10                     # K per damaged graph
+reconstructions = 100                    # K per damaged graph (advisor 2026-11-26: more than 10)
 sampler = "one_step"                     # x0 predicted directly from x_t* (Decision 8)
                                          # | "iterative": reverse chain t* -> 0 in `steps` network calls (book)
 steps = 8                                # iterative only: strided steps, e.g. t* 35 -> 35, 30, ..., 5, 0
@@ -116,11 +116,17 @@ attacks = ["random", "targeted_weighted", "targeted_deterministic"]
 # targeted_deterministic : k_i * k_j descending (one reference series)
 
 [experiment]
+# What the experiment records (advisor meeting, 2026-11-26):
+#   "probabilities" : one model (sources must be ["noise"]), K diffusion reconstructions; only the decoded
+#                     probabilities of the removed edges are saved (+ the no-diffusion probability, for the
+#                     "how much did the diffusion move the edge" view); no control pairs, no threshold.
+#   "pairwise"      : Decisions 10 / 11 (control pairs, ways A and B, three methods, ensemble possible).
+output = "probabilities"
 # Where the K = recovery.reconstructions reconstructions of every damaged graph come from (Decision 11),
 # run paired (same split, series, noise seeds, reference draws):
 #   "noise"    : one model (member 0 = the config seeds), K diffusion noise draws;
 #   "ensemble" : K models trained on the train edges with different seeds; reconstruction k = model k.
-sources = ["noise", "ensemble"]
+sources = ["noise"]
 # p_e is computed in two ways (Decision 11, both always saved):
 #   way A ("vote")    : each reconstruction decides alone (pairwise, Decision 10); p_e = r_e / (n_e * K);
 #   way B ("average") : per damaged graph the K reconstructions' shares (rank among control pairs) are

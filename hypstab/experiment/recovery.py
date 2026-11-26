@@ -224,3 +224,66 @@ def run_attack(
         if log_prefix:
             print(f"[recovery] {log_prefix} series {s + 1}/{S} ({time.perf_counter() - started:.1f}s)", flush=True)
     return out
+
+
+@torch.no_grad()
+def run_attack_probabilities(
+    graph: GraphData,
+    split: EdgeSplit,
+    items: Sequence[DamageSeries],
+    model: ModelBundle,
+    config: HypstabConfig,
+    device: torch.device,
+    log_prefix: str | None = None,
+) -> dict[str, np.ndarray]:
+    """experiment.output = "probabilities" (advisor, 2026-11-26): one model, K diffusion reconstructions.
+
+    Only decoded probabilities of the removed edges are kept; no control pairs, no decision, no threshold.
+    The damaged graphs, the noise seeds (recovery_seed(recovery.seed, s, k)) and therefore the
+    probabilities are the same as in ``run_attack`` for the same model (tested).
+
+    Returned arrays (L levels, S series, K reconstructions, P pool edges):
+      removed (L,S,P) bool
+      prob_diffusion (L,S,K,P) float32     every diffusion reconstruction (NaN where not removed)
+      prob_no_diffusion (L,S,P) float32    decoder on the damaged graph's embedding; no noise, so it is the
+                                           same in every reconstruction (NaN where not removed)
+    """
+    rec = config.recovery
+    K = rec.reconstructions
+    levels = len(config.perturbation.damage_fractions)
+    S, P = len(items), len(split.pool)
+    if [item.series_index for item in items] != list(range(S)):
+        raise ValueError("series must be numbered 0 .. S-1 in order")
+    features = graph.features.to(device)
+    kept_edges = np.concatenate([split.train, split.val])
+    model.autoencoder.eval()
+    model.diffusion.eval()
+
+    out = {
+        "removed": np.zeros((levels, S, P), dtype=bool),
+        "prob_diffusion": np.full((levels, S, K, P), np.nan, dtype=np.float32),
+        "prob_no_diffusion": np.full((levels, S, P), np.nan, dtype=np.float32),
+    }
+    for item in items:
+        s = item.series_index
+        started = time.perf_counter()
+        for level in range(levels):
+            pool_index = item.removed_pool_indices(level)
+            keep = np.ones(P, dtype=bool)
+            keep[pool_index] = False
+            damaged = np.concatenate([kept_edges, split.pool[keep]])
+            adjacency = normalized_adjacency(graph.node_count, damaged, device)
+            removed_pairs = torch.as_tensor(split.pool[pool_index], device=device)
+            out["removed"][level, s, pool_index] = True
+            embeddings = model.autoencoder.encode(features, adjacency)
+            out["prob_no_diffusion"][level, s, pool_index] = _sigmoid(_logits(model, embeddings, removed_pairs))
+            for k in range(K):
+                generator = torch.Generator(device=device)
+                generator.manual_seed(recovery_seed(rec.seed, s, k))
+                recovered = model.diffusion.recover(embeddings, adjacency, model.context.labels,
+                                                    model.context.centers, rec.t_star, generator,
+                                                    rec.sampler, rec.steps)
+                out["prob_diffusion"][level, s, k, pool_index] = _sigmoid(_logits(model, recovered, removed_pairs))
+        if log_prefix:
+            print(f"[recovery] {log_prefix} series {s + 1}/{S} ({time.perf_counter() - started:.1f}s)", flush=True)
+    return out

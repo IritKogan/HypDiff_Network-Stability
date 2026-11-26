@@ -32,6 +32,7 @@ SAMPLERS = ("one_step", "iterative")                              # hypstab/diff
 DENOISER_TRAINING = ("edge_reconstruction", "unrolled")            # hypstab/training/denoiser.py
 ATTACKS = ("random", "targeted_weighted", "targeted_deterministic")  # hypstab/experiment/damage.py
 SOURCES = ("noise", "ensemble")                                    # hypstab/experiment/recovery.py
+OUTPUTS = ("pairwise", "probabilities")   # probabilities: advisor 2026-11-26 (hypstab/experiment/probabilities.py)
 
 
 class ConfigError(ValueError):
@@ -259,16 +260,20 @@ class PerturbationSection:
 
 @dataclass(frozen=True)
 class ExperimentSection:
+    output: str
     sources: tuple[str, ...]
     way_b_references: int
 
     def validate(self) -> None:
+        _choice("experiment.output", self.output, OUTPUTS)
         if not self.sources or len(set(self.sources)) != len(self.sources):
             raise ConfigError("experiment.sources must be a non-empty list without repeats")
         for source in self.sources:
             _choice("experiment.sources", source, SOURCES)
         if self.way_b_references < 1:
             raise ConfigError(f"experiment.way_b_references must be >= 1, got {self.way_b_references}")
+        if self.output == "probabilities" and tuple(self.sources) != ("noise",):
+            raise ConfigError("experiment.output = 'probabilities' uses one model: experiment.sources = ['noise']")
 
 
 @dataclass(frozen=True)

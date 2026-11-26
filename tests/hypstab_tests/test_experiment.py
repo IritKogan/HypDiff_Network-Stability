@@ -48,7 +48,7 @@ def experiment_config(raw: dict, **sections):
     raw["denoiser"].update(hidden_dim=16, layers=2, epochs=6)
     raw["recovery"].update(reconstructions=3)
     raw["perturbation"].update(damage_fractions=[0.05, 0.1, 0.2], series=2)
-    raw["experiment"].update(way_b_references=4)
+    raw["experiment"].update(way_b_references=4, output="pairwise", sources=["noise", "ensemble"])
     for section, values in sections.items():
         raw[section].update(values)
     return config_from_dict(raw)

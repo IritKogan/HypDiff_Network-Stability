@@ -13,6 +13,10 @@ Run directory:
   results/<source>__<attack>.npz             raw arrays of recovery.run_attack (written when an attack ends)
   summary.json, edges.csv, figures/          derived; recomputed from results/ on every (re)run
 Resume: finished members and finished results/*.npz are loaded, not recomputed.
+
+experiment.output = "probabilities" (advisor, 2026-11-26): one model, K diffusion reconstructions, only the
+decoded probabilities of the removed edges are saved (results/noise__<attack>.npz: removed, prob_diffusion,
+prob_no_diffusion); summary.json, edges.csv and figures/ come from hypstab/experiment/probabilities.py.
 """
 
 from __future__ import annotations
@@ -32,7 +36,8 @@ from hypstab.data.split import EdgeSplit, split_edges
 from hypstab.experiment.damage import series_from_config
 from hypstab.experiment.models import get_bundles
 from hypstab.experiment.pe import edge_rows, per_edge, summarize_attack
-from hypstab.experiment.recovery import METHODS, run_attack
+from hypstab.experiment import probabilities as prob_analysis
+from hypstab.experiment.recovery import METHODS, run_attack, run_attack_probabilities
 
 
 def make_split(graph: GraphData, config: HypstabConfig) -> EdgeSplit:
@@ -73,6 +78,8 @@ def run_experiment(config: HypstabConfig, run_dir: Path, device: torch.device, g
 
     K = config.recovery.reconstructions
     sources = config.experiment.sources
+    if config.experiment.output == "probabilities":
+        return _run_probabilities(config, run_dir, device, graph, split, series, log_every)
     members = K if "ensemble" in sources else 1
     bundles = get_bundles(graph, split, config, members, run_dir, device, log_every=log_every)
     records = [{k: v for k, v in b.record.items() if k != "histories"} for b in bundles]
@@ -102,6 +109,57 @@ def run_experiment(config: HypstabConfig, run_dir: Path, device: torch.device, g
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False), encoding="utf-8")
     write_edges_csv(run_dir / "edges.csv", graph, split, results, config)
     plot_ecdf(run_dir / "figures", results, config)
+    return summary
+
+
+def _run_probabilities(config, run_dir, device, graph, split, series, log_every) -> dict[str, Any]:
+    """experiment.output = "probabilities": one model, K reconstructions, probabilities only."""
+    bundle = get_bundles(graph, split, config, 1, run_dir, device, log_every=log_every)[0]
+    record = {k: v for k, v in bundle.record.items() if k != "histories"}
+    (run_dir / "models.json").write_text(json.dumps([record], indent=2), encoding="utf-8")
+    results_dir = run_dir / "results"
+    results_dir.mkdir(exist_ok=True)
+    fractions = config.perturbation.damage_fractions
+    timings: dict[str, float] = {}
+    results: dict[str, dict[str, np.ndarray]] = {}
+    for attack, items in series.items():
+        path = results_dir / f"noise__{attack}.npz"
+        if path.exists():
+            results[attack] = dict(np.load(path))
+            print(f"[recovery] noise / {attack}: loaded", flush=True)
+            continue
+        started = time.perf_counter()
+        arrays = run_attack_probabilities(graph, split, items, bundle, config, device,
+                                          log_prefix=f"noise / {attack}")
+        timings[attack] = round(time.perf_counter() - started, 1)
+        np.savez_compressed(path, **arrays)
+        results[attack] = arrays
+
+    ceiling = prob_analysis.probability_ceiling(config.decoder.fermi_dirac_r, config.decoder.fermi_dirac_t)
+    summary: dict[str, Any] = {
+        "output": "probabilities",
+        "graph": {"name": graph.name, "nodes": graph.node_count, "edges": int(len(graph.edges)),
+                  "features": config.data.features},
+        "split_sizes": {k: int(len(getattr(split, k)))
+                        for k in ("train", "val", "pool", "val_negatives", "control_pairs")},
+        "K": config.recovery.reconstructions,
+        "t_star": config.recovery.t_star,
+        "probability_ceiling": ceiling,
+        "model": {"validation_auc": record.get("validation_auc"),
+                  "communities_vs_classes_ari": record.get("communities_vs_classes_ari")},
+        "attacks": {attack: prob_analysis.summarize_attack(arrays, fractions)
+                    for attack, arrays in results.items()},
+        "recovery_seconds_this_session": timings,
+    }
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False), encoding="utf-8")
+    degrees = np.bincount(split.all_edges.reshape(-1), minlength=graph.node_count)
+    same = _same_class(graph, split.pool)
+    rows = []
+    for attack, arrays in results.items():
+        rows.extend(prob_analysis.edge_rows(arrays, fractions, attack, split.pool, degrees, same))
+    prob_analysis.write_rows(run_dir / "edges.csv", rows)
+    for attack, arrays in results.items():
+        prob_analysis.plot_attack(run_dir / "figures", attack, arrays, fractions, ceiling, seed=config.run.seed)
     return summary
 
 
