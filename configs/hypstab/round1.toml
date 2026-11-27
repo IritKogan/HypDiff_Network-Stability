@@ -1,0 +1,56 @@
+# Round 1 of Decision 14 (students, 2026-11-27): which ENCODER, per network. Validation protocol only
+# (train graph as input; validation edges vs validation negatives; pool edges / control pairs never read).
+# Encoder only, no denoiser: the choice is made on the no_diffusion validation AUC (independent of k);
+# clamp_only is reported for every candidate k (K-means + clamp, no denoiser) to see whether the ranking flips.
+# Every variant = base config of the network (configs/hypstab/<network>.toml) + features + package + edge drop,
+# trained with `seeds` seeds (replicate 0 = the config seeds; r >= 1: hypstab.experiment.models.member_seed).
+# Run (from the repository root, on the GPU laptop):
+#   python scripts/hypstab_round1.py --plan configs/hypstab/round1.toml --run-dir artifacts/round1 --zip
+# Resumable (--resume): a variant with metrics.json is not recomputed. --smoke: tiny check of the whole loop.
+
+[round]
+seeds = 3                                      # students 2026-11-27: 3 seeds per variant
+k_values = [3, 7, 20, 50, 100, 200, 500]       # paper appendix I.1 / I.2 (k up to 500, k = 200), upstream k = 3,
+                                               # ours 7; the same list is used in round 2
+quantiles = [0.05, 0.25, 0.5, 0.75, 0.95]      # for distances / probabilities / radii (BA check); no mean
+
+# Networks and the feature modes compared on each (Decision 14 item 2). Cora keeps its text features.
+[[network]]
+name = "cora"
+features = ["original"]
+
+[[network]]
+name = "cora_structure"
+features = ["identity", "identity_degree"]
+
+[[network]]
+name = "sbm"
+features = ["identity", "identity_degree"]
+
+[[network]]
+name = "ba"
+features = ["identity", "identity_degree"]
+
+# Encoder packages (Decision 14 item 6). "paper": HypDiff paper Settings (dim 256, lr 0.001, L2 1e-5) and, where
+# the paper is silent, the upstream code (dropout 0.2 config.py; row-normalised adjacency data_utils.process;
+# per-parameter gradient clip 10 lp_train.py). "ours": the base configs unchanged (2026-11-16 validation sweep).
+[[package]]
+name = "ours"
+overrides = {}
+
+[[package]]
+name = "paper"
+overrides = { "encoder.dim" = 256, "encoder.learning_rate" = 0.001, "encoder.weight_decay" = 1e-5, "encoder.dropout" = 0.2, "encoder.adjacency_norm" = "row", "encoder.grad_clip_norm" = 10.0 }
+
+# Encoder training on damaged train graphs (Decision 14 item 1; loss "dropped", students 2026-11-27).
+[[edge_drop]]
+name = "none"
+overrides = { "encoder.edge_drop_mode" = "none", "encoder.edge_drop_fraction" = 0.0 }
+
+[[edge_drop]]
+name = "fixed02"
+overrides = { "encoder.edge_drop_mode" = "fixed", "encoder.edge_drop_fraction" = 0.02, "encoder.edge_drop_loss" = "dropped" }
+
+[[edge_drop]]
+name = "uniform04"
+overrides = { "encoder.edge_drop_mode" = "uniform", "encoder.edge_drop_fraction" = 0.4, "encoder.edge_drop_loss" = "dropped" }
