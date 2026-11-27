@@ -139,7 +139,7 @@ def train_autoencoder(
 
     model = build_autoencoder(graph.features.shape[1], config).to(device)
     features = graph.features.to(device)
-    adjacency = normalized_adjacency(graph.node_count, split.train, device)
+    adjacency = normalized_adjacency(graph.node_count, split.train, device, enc.adjacency_norm)
     train_pos = _pairs(split.train, device)
     val_pos = _pairs(split.val, device)
     val_neg = _pairs(split.val_negatives, device)
@@ -180,7 +180,7 @@ def train_autoencoder(
             if len(dropped_edges) == 0:
                 loss = None
             else:
-                epoch_adjacency = normalized_adjacency(graph.node_count, kept_edges, device)
+                epoch_adjacency = normalized_adjacency(graph.node_count, kept_edges, device, enc.adjacency_norm)
                 groups = [_pairs(dropped_edges, device)]
                 if enc.edge_drop_loss == "dropped_and_kept" and len(kept_edges):
                     groups.append(_pairs(kept_edges, device))
@@ -193,6 +193,9 @@ def train_autoencoder(
             if not torch.isfinite(loss):
                 raise RuntimeError(f"non-finite autoencoder loss at epoch {epoch}")
             loss.backward()
+            if enc.grad_clip_norm > 0:   # per parameter, as upstream lp_train.py
+                for parameter in model.parameters():
+                    torch.nn.utils.clip_grad_norm_(parameter, enc.grad_clip_norm)
             optimizer.step()
             train_loss.append(float(loss.detach()))
 

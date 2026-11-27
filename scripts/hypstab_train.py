@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> dict:
         model.eval()
         history = json.loads((source / "autoencoder_history.json").read_text(encoding="utf-8"))
         history["reused_from"] = str(source)
-        train_adjacency = normalized_adjacency(graph.node_count, split.train, device)
+        train_adjacency = normalized_adjacency(graph.node_count, split.train, device, config.encoder.adjacency_norm)
     else:
         result = train_autoencoder(graph, split, config, device, log_every=args.log_every)
         model, history, train_adjacency = result.model, result.history, result.train_adjacency

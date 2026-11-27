@@ -47,8 +47,19 @@ def activation_fn(name: str):
     raise ValueError(f"unknown activation {name!r}; choose from {ACTIVATIONS}")
 
 
-def normalized_adjacency(node_count: int, edges: np.ndarray, device: torch.device | str) -> Tensor:
-    """Sparse D^-1/2 (A + I) D^-1/2 of an undirected edge list (m, 2)."""
+ADJACENCY_NORMS = ("symmetric", "row")
+
+
+def normalized_adjacency(node_count: int, edges: np.ndarray, device: torch.device | str,
+                         mode: str = "symmetric") -> Tensor:
+    """Sparse normalised A + I of an undirected edge list (m, 2).
+
+    mode "symmetric": D^-1/2 (A + I) D^-1/2 (GCN; our default since the old code).
+    mode "row": D^-1 (A + I), as the upstream HypDiff / HGCN code (utils/data_utils.py process(): normalize(adj +
+    sp.eye)), used by the "paper" encoder package (2026-11-27).
+    """
+    if mode not in ADJACENCY_NORMS:
+        raise ValueError(f"unknown adjacency normalisation: {mode}")
     edges = np.asarray(edges, dtype=np.int64).reshape(-1, 2)
     loops = np.arange(node_count, dtype=np.int64)
     rows = np.concatenate([loops, edges[:, 0], edges[:, 1]])
@@ -58,7 +69,10 @@ def normalized_adjacency(node_count: int, edges: np.ndarray, device: torch.devic
     adjacency = torch.sparse_coo_tensor(indices, values, (node_count, node_count)).coalesce()
     degree = torch.sparse.sum(adjacency, dim=1).to_dense().clamp_min(1)
     index = adjacency.indices()
-    normalized = adjacency.values() / torch.sqrt(degree[index[0]] * degree[index[1]])
+    if mode == "row":
+        normalized = adjacency.values() / degree[index[0]]
+    else:
+        normalized = adjacency.values() / torch.sqrt(degree[index[0]] * degree[index[1]])
     return torch.sparse_coo_tensor(index, normalized, adjacency.shape).coalesce()
 
 

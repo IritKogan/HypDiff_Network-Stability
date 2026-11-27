@@ -34,6 +34,7 @@ SAMPLERS = ("one_step", "iterative")                              # hypstab/diff
 DENOISER_TRAINING = ("edge_reconstruction", "unrolled")            # hypstab/training/denoiser.py
 ATTACKS = ("random", "targeted_weighted", "targeted_deterministic")  # hypstab/experiment/damage.py
 SOURCES = ("noise", "ensemble")                                    # hypstab/experiment/recovery.py
+ADJACENCY_NORMS = ("symmetric", "row")          # hypstab/models/hgcn.normalized_adjacency (2026-11-27)
 EDGE_DROP_MODES = ("none", "fixed", "uniform")   # encoder training on damaged train graphs (2026-11-27)
 EDGE_DROP_LOSSES = ("dropped", "dropped_and_kept")   # hypstab/training/autoencoder.py
 OUTPUTS = ("pairwise", "probabilities")   # probabilities: advisor 2026-11-26 (hypstab/experiment/probabilities.py)
@@ -139,8 +140,13 @@ class EncoderSection:
     edge_drop_mode: str
     edge_drop_fraction: float
     edge_drop_loss: str
+    adjacency_norm: str
+    grad_clip_norm: float
 
     def validate(self) -> None:
+        _choice("encoder.adjacency_norm", self.adjacency_norm, ADJACENCY_NORMS)
+        if not (math.isfinite(self.grad_clip_norm) and self.grad_clip_norm >= 0):
+            raise ConfigError(f"encoder.grad_clip_norm must be >= 0 (0 = no clipping), got {self.grad_clip_norm}")
         _choice("encoder.activation", self.activation, ACTIVATIONS)
         _choice("encoder.edge_drop_mode", self.edge_drop_mode, EDGE_DROP_MODES)
         _choice("encoder.edge_drop_loss", self.edge_drop_loss, EDGE_DROP_LOSSES)

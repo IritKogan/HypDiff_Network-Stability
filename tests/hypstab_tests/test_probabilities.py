@@ -213,9 +213,9 @@ def prob_run(tmp_path_factory):
     seen = []
     original = recovery_module.normalized_adjacency
 
-    def recording(node_count, edges, device):
+    def recording(node_count, edges, device, mode="symmetric"):
         seen.append(np.asarray(edges).copy())
-        return original(node_count, edges, device)
+        return original(node_count, edges, device, mode)
 
     recovery_module.normalized_adjacency = recording
     try:

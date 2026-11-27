@@ -67,6 +67,11 @@ negatives_per_positive = 1               # resampled every epoch
 edge_drop_mode = "none"
 edge_drop_fraction = 0.0
 edge_drop_loss = "dropped"
+# 2026-11-27: "paper" package values come from the upstream code where the paper is silent:
+# adjacency_norm "row" = D^-1 (A + I) (upstream data_utils.process); "symmetric" = D^-1/2 (A + I) D^-1/2 (ours).
+# Used for EVERY encoding (training, validation, damaged graphs, denoiser input).
+adjacency_norm = "symmetric"
+grad_clip_norm = 0.0                     # per-parameter gradient-norm clip (upstream lp_train: 10); 0 = none
 
 [decoder]
 fermi_dirac_r = 2.0                      # P(edge) = 1 / (exp((d^2 - r) / t) + 1), d = Poincare distance

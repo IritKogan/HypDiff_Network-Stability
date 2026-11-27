@@ -100,7 +100,7 @@ def train_denoiser(
             fraction = float(drop_rng.uniform(0.0, den.train_max_drop))
             keep = drop_rng.random(len(split.train)) >= fraction
             kept_edges, dropped_edges = split.train[keep], split.train[~keep]
-            adjacency = normalized_adjacency(graph.node_count, kept_edges, device)
+            adjacency = normalized_adjacency(graph.node_count, kept_edges, device, config.encoder.adjacency_norm)
             with torch.no_grad():
                 damaged = autoencoder.encode(features, adjacency)
             if den.training == "unrolled":

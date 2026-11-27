@@ -161,7 +161,7 @@ def run_attack(
             keep = np.ones(P, dtype=bool)
             keep[pool_index] = False
             damaged = np.concatenate([kept_edges, split.pool[keep]])
-            adjacency = normalized_adjacency(graph.node_count, damaged, device)
+            adjacency = normalized_adjacency(graph.node_count, damaged, device, config.encoder.adjacency_norm)
             removed_pairs = torch.as_tensor(split.pool[pool_index], device=device)
             out["removed"][level, s, pool_index] = True
 
@@ -272,7 +272,7 @@ def run_attack_probabilities(
             keep = np.ones(P, dtype=bool)
             keep[pool_index] = False
             damaged = np.concatenate([kept_edges, split.pool[keep]])
-            adjacency = normalized_adjacency(graph.node_count, damaged, device)
+            adjacency = normalized_adjacency(graph.node_count, damaged, device, config.encoder.adjacency_norm)
             removed_pairs = torch.as_tensor(split.pool[pool_index], device=device)
             out["removed"][level, s, pool_index] = True
             embeddings = model.autoencoder.encode(features, adjacency)

@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> dict:
                         s.control_pairs, s.seed)
     graph = with_train_edge_features(graph, split.train, base.data.features)  # train edges only
     features = graph.features.to(device)
-    adjacency = normalized_adjacency(graph.node_count, split.train, device)
+    adjacency = normalized_adjacency(graph.node_count, split.train, device, base.encoder.adjacency_norm)
 
     # shared autoencoder (trained once, or reused) + communities
     source = Path(args.autoencoder_from) if args.autoencoder_from else (

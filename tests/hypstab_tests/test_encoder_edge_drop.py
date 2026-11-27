@@ -200,3 +200,86 @@ def test_config_round_trip_keeps_edge_drop(raw):
     config = drop_config(copy.deepcopy(raw), "fixed", 0.02)
     again = config_from_dict(tomllib.loads(config_to_toml(config)))
     assert again == config
+
+
+# --------------------------------------------------------------------------- adjacency norm / gradient clip
+
+
+def test_row_normalisation_by_hand():
+    from hypstab.models.hgcn import normalized_adjacency
+
+    edges = np.array([[0, 1], [1, 2]])           # path 0-1-2; with self-loops degrees 2, 3, 2
+    row = normalized_adjacency(3, edges, CPU, "row").to_dense().numpy()
+    np.testing.assert_allclose(row, [[1 / 2, 1 / 2, 0], [1 / 3, 1 / 3, 1 / 3], [0, 1 / 2, 1 / 2]], rtol=1e-6)
+    np.testing.assert_allclose(row.sum(1), 1.0, rtol=1e-6)
+    sym = normalized_adjacency(3, edges, CPU).to_dense().numpy()
+    np.testing.assert_allclose(sym[0, 1], 1 / np.sqrt(2 * 3), rtol=1e-6)
+    with pytest.raises(ValueError):
+        normalized_adjacency(3, edges, CPU, "column")
+
+
+def test_row_normalisation_equals_upstream_process():
+    import scipy.sparse as sp
+    from hypstab.models.hgcn import normalized_adjacency
+
+    graph = sbm_graph(seed=2)
+    n = graph.node_count
+    adj = sp.csr_matrix((np.ones(len(graph.edges)), (graph.edges[:, 0], graph.edges[:, 1])), shape=(n, n))
+    adj = adj + adj.T + sp.eye(n)                # upstream: normalize(adj + sp.eye) = row-normalise
+    expected = sp.diags(1.0 / np.asarray(adj.sum(1)).ravel()) @ adj
+    ours = normalized_adjacency(n, graph.edges, CPU, "row").to_dense().numpy()
+    np.testing.assert_allclose(ours, expected.toarray(), rtol=1e-6)
+
+
+@pytest.mark.parametrize("key, value, message", [("adjacency_norm", "column", "encoder.adjacency_norm"),
+                                                  ("grad_clip_norm", -1.0, "grad_clip_norm")])
+def test_norm_and_clip_validated(raw, key, value, message):
+    raw["encoder"][key] = value
+    with pytest.raises(ConfigError, match=message):
+        config_from_dict(raw)
+
+
+@pytest.mark.parametrize("name", ["cora", "cora_structure", "sbm", "ba"])
+def test_main_configs_keep_symmetric_norm_and_no_clip(name):
+    with (REPO_ROOT / "configs" / "hypstab" / f"{name}.toml").open("rb") as handle:
+        enc = config_from_dict(tomllib.load(handle)).encoder
+    assert (enc.adjacency_norm, enc.grad_clip_norm) == ("symmetric", 0.0)
+
+
+def test_row_norm_reaches_every_encoding(raw, monkeypatch):
+    """The encoder (training + validation), the denoiser input and the damaged graphs all use the config norm."""
+    import hypstab.experiment.recovery as recovery
+    import hypstab.training.autoencoder as autoencoder
+    import hypstab.training.denoiser as denoiser
+    from hypstab.models import hgcn
+
+    modes = []
+    real = hgcn.normalized_adjacency
+
+    def recording(node_count, edges, device, mode="symmetric"):
+        modes.append(mode)
+        return real(node_count, edges, device, mode)
+
+    for module in (autoencoder, denoiser, recovery):
+        monkeypatch.setattr(module, "normalized_adjacency", recording)
+    config = tiny_config(raw, max_epochs=3, patience=3, adjacency_norm="row")
+    graph = sbm_graph()
+    train_autoencoder(graph, make_split(graph, config), config, CPU)
+    assert modes and set(modes) == {"row"}
+    text = (REPO_ROOT / "hypstab" / "experiment" / "recovery.py").read_text(encoding="utf-8")
+    assert text.count("config.encoder.adjacency_norm)") == 2
+    text = (REPO_ROOT / "hypstab" / "training" / "denoiser.py").read_text(encoding="utf-8")
+    assert "config.encoder.adjacency_norm)" in text
+
+
+def test_grad_clip_changes_training_and_zero_is_unchanged(raw):
+    graph = sbm_graph()
+    base = tiny_config(raw, max_epochs=6, patience=6)
+    split = make_split(graph, base)
+    a = train_autoencoder(graph, split, base, CPU).history["train_loss"]
+    same = train_autoencoder(graph, split, tiny_config(raw, max_epochs=6, patience=6, grad_clip_norm=0.0),
+                             CPU).history["train_loss"]
+    assert a == same
+    clipped = train_autoencoder(graph, split, tiny_config(raw, max_epochs=6, patience=6, grad_clip_norm=1e-4),
+                                CPU).history["train_loss"]
+    assert clipped[0] == a[0] and clipped[1:] != a[1:]   # same start, tiny clip changes the updates
