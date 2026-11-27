@@ -28,6 +28,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from hypstab.config import config_from_dict, config_to_dict  # noqa: E402
 from hypstab.evaluation.validation import validation_report  # noqa: E402
+from hypstab.data.features import with_train_edge_features  # noqa: E402
 from hypstab.data.graph import load_graph  # noqa: E402
 from hypstab.data.split import split_edges  # noqa: E402
 from hypstab.runinfo import start_run  # noqa: E402
@@ -74,6 +75,7 @@ def main(argv: list[str] | None = None) -> dict:
     split = split_edges(
         graph.edges, graph.node_count, s.train_fraction, s.val_fraction, s.pool_fraction, s.control_pairs, s.seed
     )
+    graph = with_train_edge_features(graph, split.train, data.features)  # structural recipes: train edges only
     np.savez_compressed(
         run_dir / "split.npz",
         train=split.train, val=split.val, pool=split.pool,

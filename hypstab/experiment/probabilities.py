@@ -208,8 +208,8 @@ PROB = "Probability the edge was recovered"
 
 
 def dataset_label(dataset: str, features: str) -> str:
-    """Name used in figure titles, e.g. "Cora" or "Cora-structure" (identity features)."""
-    return f"{dataset}-structure" if features == "identity" and dataset not in {"SBM", "BA"} else dataset
+    """Name used in figure titles, e.g. "Cora" or "Cora-structure" (no text features)."""
+    return f"{dataset}-structure" if features != "original" and dataset not in {"SBM", "BA"} else dataset
 
 
 def per_edge_values(arrays: dict[str, np.ndarray], level: int) -> dict[int, np.ndarray]:

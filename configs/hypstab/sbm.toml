@@ -18,7 +18,7 @@ curvature = 1.0                          # c > 0; ball radius 1/sqrt(c) (same co
 dataset = "SBM"                          # synthetic, generated from [synthetic]; identity features
 root = "data"
 download = true
-features = "original"                   # "original" | "identity" (one-hot per node: structure only)
+features = "original"                   # "original" | "identity" | "identity_degree" | "structural" (hypstab/data/features.py)
 
 [synthetic]
 # Used only when data.dataset = "SBM" or "BA" (hypstab/data/synthetic.py: torch_geometric generators).

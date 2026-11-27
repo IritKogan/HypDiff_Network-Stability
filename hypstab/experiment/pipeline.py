@@ -31,6 +31,7 @@ import numpy as np
 import torch
 
 from hypstab.config import HypstabConfig
+from hypstab.data.features import with_train_edge_features
 from hypstab.data.graph import GraphData, load_graph
 from hypstab.data.split import EdgeSplit, split_edges
 from hypstab.experiment.damage import series_from_config
@@ -64,6 +65,7 @@ def run_experiment(config: HypstabConfig, run_dir: Path, device: torch.device, g
         graph = load_graph(config.data.dataset, config.data.root, config.data.download, config.synthetic,
                            config.data.features)
     split = make_split(graph, config)
+    graph = with_train_edge_features(graph, split.train, config.data.features)  # train edges only
     graph_arrays = {"edges": graph.edges}
     if graph.class_labels is not None:
         graph_arrays["class_labels"] = np.asarray(graph.class_labels)

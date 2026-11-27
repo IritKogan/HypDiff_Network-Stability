@@ -32,6 +32,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from hypstab.config import config_from_dict, config_to_dict, config_to_toml  # noqa: E402
+from hypstab.data.features import with_train_edge_features  # noqa: E402
 from hypstab.data.graph import load_graph  # noqa: E402
 from hypstab.data.split import split_edges  # noqa: E402
 from hypstab.evaluation.informativeness import variant_metrics  # noqa: E402
@@ -117,6 +118,7 @@ def main(argv: list[str] | None = None) -> dict:
     s = base.split
     split = split_edges(graph.edges, graph.node_count, s.train_fraction, s.val_fraction, s.pool_fraction,
                         s.control_pairs, s.seed)
+    graph = with_train_edge_features(graph, split.train, base.data.features)  # train edges only
     features = graph.features.to(device)
     adjacency = normalized_adjacency(graph.node_count, split.train, device)
 

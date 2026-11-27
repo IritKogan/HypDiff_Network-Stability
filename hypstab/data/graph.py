@@ -77,10 +77,13 @@ def load_graph(dataset: str, root: str | Path, download: bool, synthetic=None,
                features: str = "original") -> GraphData:
     """Planetoid graphs from disk; "SBM" / "BA" generated from the config section [synthetic].
 
-    features: "original" (the dataset's own features; SBM / BA have identity features anyway) or
-    "identity" (one-hot per node, config data.features).
+    features: "original" (the dataset's own features; SBM / BA have identity features anyway),
+    "identity" (one-hot per node, config data.features), or a train-edge structural recipe
+    ("identity_degree" / "structural"): those need the split, so this function returns the graph with
+    identity features (the original features are dropped here) and the caller applies
+    hypstab.data.features.with_train_edge_features(graph, split.train, mode) after splitting.
     """
-    if features not in {"original", "identity"}:
+    if features not in {"original", "identity", "identity_degree", "structural"}:
         raise ValueError(f"unsupported feature mode: {features}")
     if dataset in {"Cora", "CiteSeer", "PubMed"}:
         graph = load_planetoid(dataset, root, download)
@@ -92,4 +95,4 @@ def load_graph(dataset: str, root: str | Path, download: bool, synthetic=None,
         graph = synthetic_graph(dataset, synthetic)
     else:
         raise ValueError(f"unsupported dataset: {dataset}")
-    return with_identity_features(graph) if features == "identity" else graph
+    return graph if features == "original" else with_identity_features(graph)
