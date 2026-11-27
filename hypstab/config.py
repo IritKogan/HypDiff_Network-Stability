@@ -32,6 +32,8 @@ SAMPLERS = ("one_step", "iterative")                              # hypstab/diff
 DENOISER_TRAINING = ("edge_reconstruction", "unrolled")            # hypstab/training/denoiser.py
 ATTACKS = ("random", "targeted_weighted", "targeted_deterministic")  # hypstab/experiment/damage.py
 SOURCES = ("noise", "ensemble")                                    # hypstab/experiment/recovery.py
+EDGE_DROP_MODES = ("none", "fixed", "uniform")   # encoder training on damaged train graphs (2026-11-27)
+EDGE_DROP_LOSSES = ("dropped", "dropped_and_kept")   # hypstab/training/autoencoder.py
 OUTPUTS = ("pairwise", "probabilities")   # probabilities: advisor 2026-11-26 (hypstab/experiment/probabilities.py)
 
 
@@ -132,9 +134,19 @@ class EncoderSection:
     learning_rate: float
     weight_decay: float
     negatives_per_positive: int
+    edge_drop_mode: str
+    edge_drop_fraction: float
+    edge_drop_loss: str
 
     def validate(self) -> None:
         _choice("encoder.activation", self.activation, ACTIVATIONS)
+        _choice("encoder.edge_drop_mode", self.edge_drop_mode, EDGE_DROP_MODES)
+        _choice("encoder.edge_drop_loss", self.edge_drop_loss, EDGE_DROP_LOSSES)
+        if self.edge_drop_mode == "none":
+            if self.edge_drop_fraction != 0:
+                raise ConfigError("encoder.edge_drop_fraction must be 0 when encoder.edge_drop_mode = 'none'")
+        elif not 0 < self.edge_drop_fraction < 1:
+            raise ConfigError(f"encoder.edge_drop_fraction must be in (0, 1), got {self.edge_drop_fraction}")
         _choice("encoder.final_activation", self.final_activation, ACTIVATIONS)
         for name in ("dim", "num_layers", "max_epochs", "patience", "negatives_per_positive"):
             if getattr(self, name) < 1:

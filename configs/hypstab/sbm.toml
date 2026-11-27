@@ -55,6 +55,13 @@ patience = 200                           # early stopping on validation AUC
 learning_rate = 0.01
 weight_decay = 0.0005
 negatives_per_positive = 1               # resampled every epoch
+# Training on damaged train graphs (students, 2026-11-27): per epoch each train edge is dropped from the
+# encoder's input with probability q; "fixed": q = edge_drop_fraction (paper Settings: 2%), "uniform":
+# q ~ U(0, edge_drop_fraction) (as the denoiser); "none" = no dropping (fraction must be 0).
+# edge_drop_loss "dropped": positives = the dropped edges only; "dropped_and_kept": both groups.
+edge_drop_mode = "none"
+edge_drop_fraction = 0.0
+edge_drop_loss = "dropped"
 
 [decoder]
 fermi_dirac_r = 2.0                      # P(edge) = 1 / (exp((d^2 - r) / t) + 1), d = Poincare distance
