@@ -42,13 +42,13 @@ from hypstab.config import HypstabConfig, config_from_dict, config_to_toml  # no
 from hypstab.data.features import with_train_edge_features  # noqa: E402
 from hypstab.data.graph import GraphData, load_graph  # noqa: E402
 from hypstab.data.split import EdgeSplit, split_edges  # noqa: E402
-from hypstab.evaluation.validation import validation_report  # noqa: E402
 from hypstab.experiment.models import member_seed  # noqa: E402
 from hypstab.geometry import get_geometry  # noqa: E402
 from hypstab.metrics import roc_auc  # noqa: E402
 from hypstab.runinfo import resolve_device, run_info, seed_everything  # noqa: E402
 from hypstab.training.autoencoder import train_autoencoder  # noqa: E402
-from hypstab.training.communities import fit_communities  # noqa: E402
+from hypstab.models.clamp import clamp_to_centers  # noqa: E402
+from hypstab.models.kmeans import hyperbolic_kmeans  # noqa: E402
 
 SMOKE = {"encoder.max_epochs": 4, "encoder.patience": 4}
 
@@ -130,18 +130,22 @@ def variant_metrics(graph: GraphData, split: EdgeSplit, config: HypstabConfig, d
 
     no_diffusion = roc_auc(model.edge_logits(embeddings, pos).cpu().numpy(),
                            model.edge_logits(embeddings, neg).cpu().numpy())
+    # All measurements use the SAME embeddings (computed once above). On the GPU two encodings of the same
+    # graph differ in the last bits (non-deterministic sparse sums), which stopped the first GPU run when the
+    # script compared a second encoding with the first (2026-11-27). K-means and the clamp therefore run on
+    # these embeddings directly (= fit_communities + validation_report without re-encoding; tested on CPU).
+    com = config.community
     clamp: dict[str, float] = {}
     for k in k_values:
         if k > graph.node_count:
             continue
-        raw = copy.deepcopy(_raw_of(config))
-        raw["community"]["n_clusters"] = k
-        config_k = config_from_dict(raw)
-        context = fit_communities(model, features, adjacency, config_k)
-        report = validation_report(model, features, adjacency, split, context, config_k)
-        clamp[f"clamp_k{k}"] = report["clamp_only"]["auc"]
-        if abs(report["no_diffusion"]["auc"] - no_diffusion) > 1e-9:
-            raise RuntimeError("validation_report and the direct no_diffusion AUC disagree")
+        kmeans = hyperbolic_kmeans(embeddings, k=k, c=config.geometry.curvature, seed=com.seed,
+                                   max_iter=com.max_iter, frechet_steps=com.frechet_steps,
+                                   frechet_tol=com.frechet_tol, manifold=config.geometry.manifold)
+        clamped = clamp_to_centers(embeddings, kmeans.labels.to(device), kmeans.centers.to(device),
+                                   config.geometry.curvature, config.clamp.clip, config.geometry.manifold)
+        clamp[f"clamp_k{k}"] = roc_auc(model.edge_logits(clamped, pos).cpu().numpy(),
+                                       model.edge_logits(clamped, neg).cpu().numpy())
 
     geo = get_geometry(config.geometry.manifold)
     c = config.geometry.curvature
@@ -169,10 +173,6 @@ def variant_metrics(graph: GraphData, split: EdgeSplit, config: HypstabConfig, d
         "total_seconds": round(time.perf_counter() - started, 2),
         "history": h,
     }
-
-
-def _raw_of(config: HypstabConfig) -> dict:
-    return tomllib.loads(config_to_toml(config))
 
 
 def summary_row(variant: dict, metrics: dict, quantiles: list[float]) -> dict[str, Any]:

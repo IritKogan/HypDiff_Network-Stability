@@ -145,3 +145,27 @@ def test_end_to_end_resume_and_zip(r1, tmp_path, capsys):
                     encoding="utf-8")
     with pytest.raises(SystemExit, match="plan differs"):
         r1.main(args + ["--resume"])
+
+
+def test_clamp_equals_fit_communities_and_validation_report(r1, raw_cora):
+    """The script's clamp on the shared embeddings = the pipeline's own route (deterministic on CPU)."""
+    from hypstab.config import config_to_toml
+    from hypstab.evaluation.validation import validation_report
+    from hypstab.training.autoencoder import train_autoencoder
+    from hypstab.training.communities import fit_communities
+
+    graph = sbm_graph()
+    config = tiny_config(raw_cora, max_epochs=5, patience=5)
+    split = make_split(graph, config)
+    torch.manual_seed(0)
+    metrics = r1.variant_metrics(graph, split, config, torch.device("cpu"), [2, 3], [0.5])
+    torch.manual_seed(0)
+    result = train_autoencoder(graph, split, config, torch.device("cpu"))
+    for k in (2, 3):
+        raw = tomllib.loads(config_to_toml(config))
+        raw["community"]["n_clusters"] = k
+        config_k = config_from_dict(raw)
+        context = fit_communities(result.model, graph.features, result.train_adjacency, config_k)
+        report = validation_report(result.model, graph.features, result.train_adjacency, split, context, config_k)
+        assert metrics["clamp_only_auc"][f"clamp_k{k}"] == pytest.approx(report["clamp_only"]["auc"], abs=1e-12)
+        assert metrics["no_diffusion_auc"] == pytest.approx(report["no_diffusion"]["auc"], abs=1e-12)
