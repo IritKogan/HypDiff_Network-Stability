@@ -2,7 +2,7 @@
 # sees the graph structure only. Identical to configs/hypstab/cora.toml except run.name and data.features
 # (same split, damage series, model and experiment settings; no retuning). Tested.
 # 2026-11-27: the students meant text REPLACED by structural features, not identity only (Claude's mistake).
-# data.features "identity_degree" / "structural" (upstream HypDiff recipes, train edges only) are compared on
+# data.features "identity_degree" (upstream HypDiff recipe, train edges only) is compared with "identity" on
 # the validation protocol; this file stays "identity" until the students choose.
 # hypstab (from-scratch code, Decision 12) - Cora configuration.
 # Every key is required (no hidden defaults); unknown keys are rejected.
@@ -23,7 +23,7 @@ curvature = 1.0                          # c > 0; ball radius 1/sqrt(c) (same co
 dataset = "Cora"                         # Planetoid Cora, row-normalised features
 root = "data"
 download = true
-features = "identity"                   # "original" | "identity" | "identity_degree" | "structural" (hypstab/data/features.py)
+features = "identity"                   # "original" | "identity" | "identity_degree" (hypstab/data/features.py)
 
 [synthetic]
 # Used only when data.dataset = "SBM" or "BA" (hypstab/data/synthetic.py: torch_geometric generators).

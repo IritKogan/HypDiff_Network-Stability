@@ -26,8 +26,8 @@ DEVICES = ("auto", "cpu", "cuda")
 MANIFOLDS = ("poincare", "euclidean")      # euclidean: hyperbolic-vs-Euclidean check only
 DATASETS = ("Cora", "CiteSeer", "PubMed", "SBM", "BA")      # SBM / BA: hypstab/data/synthetic.py
 # identity: one-hot per node (2026-11-26; NOT what the students asked for, kept for reference);
-# identity_degree / structural: upstream HypDiff structural recipes from TRAIN edges (hypstab/data/features.py)
-FEATURE_MODES = ("original", "identity", "identity_degree", "structural")
+# identity_degree: upstream HypDiff recipe [identity, (degree + 1) / n] from TRAIN edges (hypstab/data/features.py)
+FEATURE_MODES = ("original", "identity", "identity_degree")
 ACTIVATIONS = ("relu", "leaky_relu", "elu", "tanh", "identity")  # hypstab/models/hgcn.py
 ANGULAR_NOISE = ("upstream", "folded")                            # hypstab/diffusion/model.py
 SAMPLERS = ("one_step", "iterative")                              # hypstab/diffusion/model.py

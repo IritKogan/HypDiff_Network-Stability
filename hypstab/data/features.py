@@ -2,16 +2,15 @@
 
 Students, 2026-11-27: "Cora without text features" means replacing the text with STRUCTURAL
 features, not removing every feature (Claude's identity-only implementation of 2026-11-26 was a
-mistake; mode "identity" is kept for reference). Two recipes, both copied from the upstream HypDiff
-code (data.py; featureless graph datasets), to be compared on the validation protocol:
+mistake; mode "identity" is kept for reference). Recipe copied from the upstream HypDiff code:
 
 - "identity_degree" (upstream data.py, Graph dataset class, lines ~297-306): one-hot identity plus
   ONE column (degree + 1) / n. Upstream sums the adjacency AFTER adding self-loops, hence the + 1.
-- "structural" (upstream data.py, node_festure_creator(adj, steps=3), lines 903-931, without its
-  optional random columns and without identity): columns
-      deg / n,  diag(A A^T) / n,  diag(A^3) / n^2,  diag(A^4) / n^3
-  diag(A A^T) equals the degree again; diag(A^3) = 2 x (triangles through the node); diag(A^4) =
-  closed walks of length 4. The scaling is upstream's (it makes the last columns very small).
+
+Upstream's other recipe (data.py node_festure_creator: deg / n, deg / n, diag(A^3) / n^2,
+diag(A^4) / n^3) was implemented and REMOVED (students, 2026-11-27): with upstream's scaling the
+last two columns are ~1e-6 .. 1e-10 on Cora, so it carries only the degree, which identity_degree
+already has; a rescaled version would have no source.
 
 NO LEAKAGE: A is built from the TRAIN edges only (split.train); validation and pool edges never
 influence the features. The features are computed once and stay fixed (also for damaged graphs).
@@ -25,7 +24,7 @@ import torch
 
 from hypstab.data.graph import GraphData
 
-TRAIN_EDGE_FEATURE_MODES = ("identity_degree", "structural")
+TRAIN_EDGE_FEATURE_MODES = ("identity_degree",)
 
 
 def train_adjacency(train_edges: np.ndarray, node_count: int) -> sp.csr_matrix:
@@ -47,25 +46,11 @@ def identity_degree_features(train_edges: np.ndarray, node_count: int) -> np.nda
     return np.concatenate([np.eye(node_count), column], axis=1)
 
 
-def structural_features(train_edges: np.ndarray, node_count: int) -> np.ndarray:
-    """Upstream node_festure_creator(adj, steps=3, rand_dim=0, Use_identity=False)."""
-    adj = train_adjacency(train_edges, node_count)
-    n = float(node_count)
-    columns = [np.asarray(adj.sum(axis=1)).reshape(-1) / n]
-    walk = adj
-    for step in range(3):
-        walk = walk @ adj.T
-        columns.append(walk.diagonal() / n ** (step + 1))
-    return np.stack(columns, axis=1)
-
-
 def with_train_edge_features(graph: GraphData, train_edges: np.ndarray, mode: str) -> GraphData:
     """Replace the node features by a train-edge structural recipe; other modes: graph unchanged."""
     if mode not in TRAIN_EDGE_FEATURE_MODES:
         return graph
-    n = graph.node_count
-    values = identity_degree_features(train_edges, n) if mode == "identity_degree" else structural_features(
-        train_edges, n)
+    values = identity_degree_features(train_edges, graph.node_count)
     if not np.isfinite(values).all():
         raise ValueError(f"non-finite structural features ({mode})")
     return GraphData(name=graph.name, features=torch.as_tensor(values, dtype=torch.float32).contiguous(),
